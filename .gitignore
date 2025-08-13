@@ -1,0 +1,12 @@
+# 忽略数据集文件夹
+Finetuning/advCheX_old_test/
+Finetuning/advCheX_test/
+
+# 忽略模型文件夹和文件
+Finetuning/Models/
+Finetuning/Ark6_swinLarge768_ep50.pth.tar
+
+# 忽略其他临时文件
+*.log
+*.pth
+__pycache__/

@@ -1,0 +1,247 @@
+(arktest2) pcl@pcl-m:~/lxx/projetArk/new/Ark/Ark_Plus/Finetuning$ CUDA_VISIBLE_DEVICES=0 \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+CUDA_LAUNCH_BLOCKING=1 PYTHONFAULTHANDLER=1 \
+python main_classification.py --data_set advCheX \
+  --data_dir ./advCheX_test \
+  --train_list dataset/advCheX/train.csv \
+  --val_list   dataset/advCheX/valid.csv \
+  --test_list  dataset/advCheX/test.csv \
+  --mode train --epochs 10 --warmup-epochs 0 \
+  --batch_size 8 --num_class 3 \
+  --model swin_large_384 --init ark_plus --key teacher \
+  --img_size 512 --input_size 384 --scale_up True\
+  --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar \
+  --workers 2 --opt adamw --lr 5e-5 --weight-decay 0.05 \
+  --freeze_encoder False --print_freq 20
+{'GPU': None, 'model_name': 'swin_large_384', 'init': 'ark_plus', 'pretrained_weights': './Ark6_swinLarge768_ep50.pth.tar', 'num_class': 3, 'data_set': 'advCheX', 'normalization': 'imagenet', 'img_size': 512, 'input_size': 384, 'img_depth': 3, 'data_dir': './advCheX_test', 'train_list': 'dataset/advCheX/train.csv', 'val_list': 'dataset/advCheX/valid.csv', 'test_list': 'dataset/advCheX/test.csv', 'mode': 'train', 'batch_size': 8, 'epochs': 10, 'exp_name': '', 'key': 'teacher', 'freeze_encoder': False, 'skip_training': False, 'test_every_epoch': False, 'scale_up': True, 'opt': 'adamw', 'opt_eps': 1e-08, 'opt_betas': None, 'clip_grad': None, 'momentum': 0.9, 'weight_decay': 0.05, 'sched': 'cosine', 'lr': 5e-05, 'lr_noise': None, 'lr_noise_pct': 0.67, 'lr_noise_std': 1.0, 'warmup_lr': 1e-06, 'min_lr': 1e-05, 'decay_epochs': 30, 'warmup_epochs': 0, 'cooldown_epochs': 10, 'decay_rate': 0.5, 'patience': 10, 'early_stop': True, 'num_trial': 1, 'start_index': 0, 'clean': False, 'resume': False, 'workers': 2, 'print_freq': 20, 'test_augment': True, 'anno_percent': 100, 'device': 'cuda', 'activate': 'Sigmoid', 'uncertain_label': 'LSR-Ones', 'unknown_label': 0, 'weighted_BCELoss': False, 'few_shot': -1}
+[train] shape=(353, 3), positives_per_class=[18, 278, 57]
+[train] rows_with_len!=3: 0
+[val] shape=(102, 3), positives_per_class=[5, 81, 16]
+[val] rows_with_len!=3: 0
+[test] shape=(51, 3), positives_per_class=[3, 40, 8]
+[test] rows_with_len!=3: 0
+start training....
+run: 1
+Creating model...
+Creating model from pretrained weights: ./Ark6_swinLarge768_ep50.pth.tar
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/torch/functional.py:513: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at ../aten/src/ATen/native/TensorShape.cpp:3609.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+/home/pcl/lxx/projetArk/new/Ark/Ark_Plus/Finetuning/models.py:181: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(pretrained_weights, map_location="cpu")
+dict_keys(['epoch', 'lossMIN', 'state_dict', 'teacher', 'optimizer', 'scheduler'])
+Loading teacher from checkpoint...
+Removing key ['layers.0.blocks.1.attn_mask', 'layers.1.blocks.1.attn_mask', 'layers.2.blocks.1.attn_mask', 'layers.2.blocks.3.attn_mask', 'layers.2.blocks.5.attn_mask', 'layers.2.blocks.7.attn_mask', 'layers.2.blocks.9.attn_mask', 'layers.2.blocks.11.attn_mask', 'layers.2.blocks.13.attn_mask', 'layers.2.blocks.15.attn_mask', 'layers.2.blocks.17.attn_mask', 'layers.3.blocks.1.attn_mask'] from pretrained checkpoint
+Removing key head.weight from pretrained checkpoint
+Removing key head.bias from pretrained checkpoint
+Loaded with msg: _IncompatibleKeys(missing_keys=['layers.0.blocks.1.attn_mask', 'layers.1.blocks.1.attn_mask', 'layers.2.blocks.1.attn_mask', 'layers.2.blocks.3.attn_mask', 'layers.2.blocks.5.attn_mask', 'layers.2.blocks.7.attn_mask', 'layers.2.blocks.9.attn_mask', 'layers.2.blocks.11.attn_mask', 'layers.2.blocks.13.attn_mask', 'layers.2.blocks.15.attn_mask', 'layers.2.blocks.17.attn_mask', 'head.weight', 'head.bias'], unexpected_keys=['projector.weight', 'projector.bias', 'omni_heads.0.weight', 'omni_heads.0.bias', 'omni_heads.1.weight', 'omni_heads.1.bias', 'omni_heads.2.weight', 'omni_heads.2.bias', 'omni_heads.3.weight', 'omni_heads.3.bias', 'omni_heads.4.weight', 'omni_heads.4.bias', 'omni_heads.5.weight', 'omni_heads.5.bias'])
+SwinTransformer(
+  (patch_embed): PatchEmbed(
+    (proj): Conv2d(3, 192, kernel_size=(4, 4), stride=(4, 4))
+    (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+  )
+  (pos_drop): Dropout(p=0.0, inplace=False)
+  (layers): Sequential(
+    (0): BasicLayer(
+      dim=192, input_resolution=(96, 96), depth=2
+      (blocks): ModuleList(
+        (0): SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): Identity()
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+        (1): SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(96, 96), dim=192
+        (reduction): Linear(in_features=768, out_features=384, bias=False)
+        (norm): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (1): BasicLayer(
+      dim=384, input_resolution=(48, 48), depth=2
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=384, out_features=1152, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=384, out_features=384, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=384, out_features=1536, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=1536, out_features=384, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(48, 48), dim=384
+        (reduction): Linear(in_features=1536, out_features=768, bias=False)
+        (norm): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (2): BasicLayer(
+      dim=768, input_resolution=(24, 24), depth=18
+      (blocks): ModuleList(
+        (0-17): 18 x SwinTransformerBlock(
+          (norm1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=768, out_features=2304, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=768, out_features=768, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=768, out_features=3072, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=3072, out_features=768, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(24, 24), dim=768
+        (reduction): Linear(in_features=3072, out_features=1536, bias=False)
+        (norm): LayerNorm((3072,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (3): BasicLayer(
+      dim=1536, input_resolution=(12, 12), depth=2
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=1536, out_features=4608, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=1536, out_features=1536, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=1536, out_features=6144, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=6144, out_features=1536, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (norm): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+  (avgpool): AdaptiveAvgPool1d(output_size=1)
+  (head): Linear(in_features=1536, out_features=3, bias=True)
+)
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/timm/utils/cuda.py:40: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  self._scaler = torch.cuda.amp.GradScaler()
+Epoch: [0][ 0/45]	Time  1.608 ( 1.608)	Loss 6.6582e-01 (6.6582e-01)
+Val: [ 0/13]	Time  0.804 ( 0.804)	Loss 3.3445e-01 (3.3445e-01)
+Epoch 0000: val_loss improved from 1000000.00000 to 0.36169, saving model to ./Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0
+Epoch: [1][ 0/45]	Time  0.995 ( 0.995)	Loss 1.9714e-01 (1.9714e-01)
+Val: [ 0/13]	Time  0.832 ( 0.832)	Loss 3.0558e-01 (3.0558e-01)
+Epoch 0001: val_loss improved from 0.36169 to 0.34113, saving model to ./Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0
+Epoch: [2][ 0/45]	Time  0.990 ( 0.990)	Loss 5.5989e-01 (5.5989e-01)
+Val: [ 0/13]	Time  0.841 ( 0.841)	Loss 3.0975e-01 (3.0975e-01)
+Epoch 0002: val_loss did not improve from 0.34113 
+Epoch: [3][ 0/45]	Time  1.002 ( 1.002)	Loss 1.4783e-01 (1.4783e-01)
+Val: [ 0/13]	Time  0.810 ( 0.810)	Loss 3.1034e-01 (3.1034e-01)
+Epoch 0003: val_loss did not improve from 0.34113 
+Epoch: [4][ 0/45]	Time  1.051 ( 1.051)	Loss 6.2115e-01 (6.2115e-01)
+Val: [ 0/13]	Time  0.830 ( 0.830)	Loss 3.2332e-01 (3.2332e-01)
+Epoch 0004: val_loss did not improve from 0.34113 
+Epoch: [5][ 0/45]	Time  0.967 ( 0.967)	Loss 5.4620e-01 (5.4620e-01)
+Val: [ 0/13]	Time  0.848 ( 0.848)	Loss 3.2667e-01 (3.2667e-01)
+Epoch 0005: val_loss did not improve from 0.34113 
+Epoch: [6][ 0/45]	Time  1.016 ( 1.016)	Loss 2.6611e-01 (2.6611e-01)
+Val: [ 0/13]	Time  0.814 ( 0.814)	Loss 3.0120e-01 (3.0120e-01)
+Epoch 0006: val_loss did not improve from 0.34113 
+Epoch: [7][ 0/45]	Time  1.015 ( 1.015)	Loss 4.5105e-01 (4.5105e-01)
+Val: [ 0/13]	Time  0.817 ( 0.817)	Loss 3.2087e-01 (3.2087e-01)
+Epoch 0007: val_loss improved from 0.34113 to 0.31813, saving model to ./Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0
+Epoch: [8][ 0/45]	Time  1.016 ( 1.016)	Loss 3.6538e-01 (3.6538e-01)
+Val: [ 0/13]	Time  0.810 ( 0.810)	Loss 3.1963e-01 (3.1963e-01)
+Epoch 0008: val_loss did not improve from 0.31813 
+Epoch: [9][ 0/45]	Time  0.946 ( 0.946)	Loss 2.2466e-01 (2.2466e-01)
+Val: [ 0/13]	Time  0.816 ( 0.816)	Loss 3.4441e-01 (3.4441e-01)
+Epoch 0009: val_loss did not improve from 0.31813 
+start testing.....
+>> Disease = ['CHD', 'nonCHD', 'Other']
+[DEBUG] ...heyheyhey:test_clasification
+Creating model...
+Creating model from pretrained weights: ./Ark6_swinLarge768_ep50.pth.tar
+dict_keys(['epoch', 'lossMIN', 'state_dict', 'teacher', 'optimizer', 'scheduler'])
+Loading teacher from checkpoint...
+Removing key ['layers.0.blocks.1.attn_mask', 'layers.1.blocks.1.attn_mask', 'layers.2.blocks.1.attn_mask', 'layers.2.blocks.3.attn_mask', 'layers.2.blocks.5.attn_mask', 'layers.2.blocks.7.attn_mask', 'layers.2.blocks.9.attn_mask', 'layers.2.blocks.11.attn_mask', 'layers.2.blocks.13.attn_mask', 'layers.2.blocks.15.attn_mask', 'layers.2.blocks.17.attn_mask', 'layers.3.blocks.1.attn_mask'] from pretrained checkpoint
+Removing key head.weight from pretrained checkpoint
+Removing key head.bias from pretrained checkpoint
+Loaded with msg: _IncompatibleKeys(missing_keys=['layers.0.blocks.1.attn_mask', 'layers.1.blocks.1.attn_mask', 'layers.2.blocks.1.attn_mask', 'layers.2.blocks.3.attn_mask', 'layers.2.blocks.5.attn_mask', 'layers.2.blocks.7.attn_mask', 'layers.2.blocks.9.attn_mask', 'layers.2.blocks.11.attn_mask', 'layers.2.blocks.13.attn_mask', 'layers.2.blocks.15.attn_mask', 'layers.2.blocks.17.attn_mask', 'head.weight', 'head.bias'], unexpected_keys=['projector.weight', 'projector.bias', 'omni_heads.0.weight', 'omni_heads.0.bias', 'omni_heads.1.weight', 'omni_heads.1.bias', 'omni_heads.2.weight', 'omni_heads.2.bias', 'omni_heads.3.weight', 'omni_heads.3.bias', 'omni_heads.4.weight', 'omni_heads.4.bias', 'omni_heads.5.weight', 'omni_heads.5.bias'])
+/home/pcl/lxx/projetArk/new/Ark/Ark_Plus/Finetuning/trainer.py:77: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  modelCheckpoint = torch.load(checkpoint)
+=> loaded pre-trained model './Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0.pth.tar'
+  0%|                                                                              | 0/13 [00:00<?, ?it/s][DEBUG] head.weight mean abs: 0.01592853106558323
+[DEBUG] head.bias sigmoid : [0.49959999322891235, 0.5001999735832214, 0.4997999966144562]
+[DEBUG] first batch input  mean/std: -0.2897445857524872 1.1924961805343628
+[DEBUG] first batch output mean/std: -1.6401715278625488 2.630934715270996
+100%|█████████████████████████████████████████████████████████████████████| 13/13 [00:10<00:00,  1.20it/s]
+[0.021590676, 0.68139565, 0.32081476]
+>> Mean AUC = 0.6742 
+AUC = [0.9653,0.6386,0.4186]
+>> Mean MCC = 0.3084 
+MCC = [ 0.426 , 0.5603,-0.061 ]
+>> Mean AP = 0.5710 
+AP = [0.6984,0.8186,0.1959]
+>> Mean F1 = 0.4534 
+F1 = [0.4444,0.9157,0.    ]
+3 3
+3 3
+>> All trials: mAUC = [0.6742]
+ mMCC = [0.3084]
+ mAP = [0.571]
+ mF1 = [0.4534]
+ 
+>> Mean / STD over All trials: aAUC = 0.6742(0.0000) aMCC = 0.3084(0.0000) aAP = 0.5710(0.0000) aF1 = 0.4534(0.0000)  
+

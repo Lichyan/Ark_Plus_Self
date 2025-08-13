@@ -1,0 +1,93 @@
+(arktest2) pcl@pcl-m:~/lxx/projetArk/new/Ark/Ark_Plus/Finetuning$ python main_classification.py --data_set advCheX   --data_dir ./advCheX_test   --train_list dataset/advCheX/train.csv   --val_list   dataset/advCheX/valid.csv   --test_list  dataset/advCheX/test.csv   --mode test --batch_size 2 --num_class 19   --model swin_large_384 --init ark_plus --key teacher   --img_size 896 --input_size 768   --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar   --workers 2 --test_augment True
+{'GPU': None, 'model_name': 'swin_large_384', 'init': 'ark_plus', 'pretrained_weights': './Ark6_swinLarge768_ep50.pth.tar', 'num_class': 19, 'data_set': 'advCheX', 'normalization': 'imagenet', 'img_size': 896, 'input_size': 768, 'img_depth': 3, 'data_dir': './advCheX_test', 'train_list': 'dataset/advCheX/train.csv', 'val_list': 'dataset/advCheX/valid.csv', 'test_list': 'dataset/advCheX/test.csv', 'mode': 'test', 'batch_size': 2, 'epochs': 200, 'exp_name': '', 'key': 'teacher', 'freeze_encoder': False, 'skip_training': False, 'test_every_epoch': False, 'scale_up': False, 'opt': 'momentum', 'opt_eps': 1e-08, 'opt_betas': None, 'clip_grad': None, 'momentum': 0.9, 'weight_decay': 0.0, 'sched': 'cosine', 'lr': 0.01, 'lr_noise': None, 'lr_noise_pct': 0.67, 'lr_noise_std': 1.0, 'warmup_lr': 1e-06, 'min_lr': 1e-05, 'decay_epochs': 30, 'warmup_epochs': 20, 'cooldown_epochs': 10, 'decay_rate': 0.5, 'patience': 10, 'early_stop': True, 'num_trial': 1, 'start_index': 0, 'clean': False, 'resume': False, 'workers': 2, 'print_freq': 50, 'test_augment': True, 'anno_percent': 100, 'device': 'cuda', 'activate': 'Sigmoid', 'uncertain_label': 'LSR-Ones', 'unknown_label': 0, 'weighted_BCELoss': False, 'few_shot': -1}
+[test] shape=(51, 19), positives_per_class=[0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 2, 0, 1, 0, 42, 0, 0, 5]
+[test] rows_with_len!=19: 0
+start testing.....
+>> Disease = ['Normal', 'ASD', 'VSD', 'PDA', 'TOF', 'MS', 'PS', 'AS', 'AR', 'MR', 'PAH', 'PFO', 'HCM', 'DCM', 'ARVC', 'CAD', 'HTN', 'Aneurysm', 'Other']
+[DEBUG] ...heyheyhey:test_clasification
+Creating model...
+Creating model from pretrained weights: ./Ark6_swinLarge768_ep50.pth.tar
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/torch/functional.py:513: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at ../aten/src/ATen/native/TensorShape.cpp:3609.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+/home/pcl/lxx/projetArk/new/Ark/Ark_Plus/Finetuning/models.py:181: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(pretrained_weights, map_location="cpu")
+dict_keys(['epoch', 'lossMIN', 'state_dict', 'teacher', 'optimizer', 'scheduler'])
+Loading teacher from checkpoint...
+Removing key head.weight from pretrained checkpoint
+Removing key head.bias from pretrained checkpoint
+Loaded with msg: _IncompatibleKeys(missing_keys=['head.weight', 'head.bias'], unexpected_keys=['projector.weight', 'projector.bias', 'omni_heads.0.weight', 'omni_heads.0.bias', 'omni_heads.1.weight', 'omni_heads.1.bias', 'omni_heads.2.weight', 'omni_heads.2.bias', 'omni_heads.3.weight', 'omni_heads.3.bias', 'omni_heads.4.weight', 'omni_heads.4.bias', 'omni_heads.5.weight', 'omni_heads.5.bias'])
+/home/pcl/lxx/projetArk/new/Ark/Ark_Plus/Finetuning/trainer.py:77: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  modelCheckpoint = torch.load(checkpoint)
+=> loaded pre-trained model './Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0.pth.tar'
+  0%|                                                                                                                                       | 0/51 [00:00<?, ?it/s][DEBUG] head.weight mean abs: 0.016306878998875618
+[DEBUG] head.bias sigmoid : [0.49939998984336853, 0.49970000982284546, 0.49950000643730164, 0.49950000643730164, 0.49939998984336853, 0.49939998984336853, 0.49939998984336853, 0.49939998984336853, 0.49950000643730164, 0.49950000643730164, 0.49939998984336853, 0.49959999322891235, 0.49939998984336853, 0.49939998984336853, 0.49939998984336853, 0.5001999735832214, 0.49939998984336853, 0.4993000030517578, 0.4997999966144562]
+[DEBUG] first batch input  mean/std: -0.1306045800447464 1.2023357152938843
+[DEBUG] first batch output mean/std: -5.527676582336426 2.290829658508301
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:25<00:00,  1.96it/s]
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976234, 0.06943822, 0.05264261, 0.066489294, 0.004347185, 0.7951028, 0.075289994]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+19 19
+>> All trials: mAUC = [0.8256,0.8256,0.8256,0.8256,0.8256]
+ mMCC = [0.0899,0.0899,0.0899,0.0899,0.0899]
+ mAP = [0.6245,0.6245,0.6245,0.6245,0.6245]
+ mF1 = [0.1836,0.1836,0.1836,0.1836,0.1836]
+ 
+>> Mean / STD over All trials: aAUC = 0.8256(0.0000) aMCC = 0.0899(0.0000) aAP = 0.6245(0.0000) aF1 = 0.1836(0.0000)

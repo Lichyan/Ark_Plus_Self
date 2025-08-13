@@ -1,0 +1,271 @@
+(arktest2) pcl@pcl-m:~/lxx/projetArk/new/Ark/Ark_Plus/Finetuning$ CUDA_VISIBLE_DEVICES=0 python main_classification.py --data_set advCheX   --data_dir ./advCheX_test   --train_list dataset/advCheX/train.csv   --val_list   dataset/advCheX/valid.csv   --test_list  dataset/advCheX/test.csv   --mode train --epochs 3 --warmup-epochs 0   --batch_size 2 --num_class 19   --model swin_large_384 --init ark_plus --key teacher   --img_size 896 --input_size 768   --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar   --workers 2 --opt adamw --lr 1e-4 --weight-decay 0.05   --freeze_encoder True --test_every_epoch False --print_freq 20
+{'GPU': None, 'model_name': 'swin_large_384', 'init': 'ark_plus', 'pretrained_weights': './Ark6_swinLarge768_ep50.pth.tar', 'num_class': 19, 'data_set': 'advCheX', 'normalization': 'imagenet', 'img_size': 896, 'input_size': 768, 'img_depth': 3, 'data_dir': './advCheX_test', 'train_list': 'dataset/advCheX/train.csv', 'val_list': 'dataset/advCheX/valid.csv', 'test_list': 'dataset/advCheX/test.csv', 'mode': 'train', 'batch_size': 2, 'epochs': 3, 'exp_name': '', 'key': 'teacher', 'freeze_encoder': True, 'skip_training': False, 'test_every_epoch': False, 'scale_up': False, 'opt': 'adamw', 'opt_eps': 1e-08, 'opt_betas': None, 'clip_grad': None, 'momentum': 0.9, 'weight_decay': 0.05, 'sched': 'cosine', 'lr': 0.0001, 'lr_noise': None, 'lr_noise_pct': 0.67, 'lr_noise_std': 1.0, 'warmup_lr': 1e-06, 'min_lr': 1e-05, 'decay_epochs': 30, 'warmup_epochs': 0, 'cooldown_epochs': 10, 'decay_rate': 0.5, 'patience': 10, 'early_stop': True, 'num_trial': 1, 'start_index': 0, 'clean': False, 'resume': False, 'workers': 2, 'print_freq': 20, 'test_augment': True, 'anno_percent': 100, 'device': 'cuda', 'activate': 'Sigmoid', 'uncertain_label': 'LSR-Ones', 'unknown_label': 0, 'weighted_BCELoss': False, 'few_shot': -1}
+[train] shape=(356, 19), positives_per_class=[0, 13, 1, 3, 0, 0, 0, 0, 6, 3, 1, 7, 0, 2, 0, 256, 0, 0, 64]
+[train] rows_with_len!=19: 0
+[val] shape=(102, 19), positives_per_class=[0, 4, 1, 2, 0, 0, 0, 0, 1, 2, 0, 1, 1, 1, 0, 79, 0, 0, 12]
+[val] rows_with_len!=19: 0
+[test] shape=(51, 19), positives_per_class=[0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 2, 0, 1, 0, 42, 0, 0, 5]
+[test] rows_with_len!=19: 0
+start training....
+run: 1
+[DEBUG]...use pos_weight_BCE...
+Creating model...
+Creating model from pretrained weights: ./Ark6_swinLarge768_ep50.pth.tar
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/torch/functional.py:513: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at ../aten/src/ATen/native/TensorShape.cpp:3609.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+/home/pcl/lxx/projetArk/new/Ark/Ark_Plus/Finetuning/models.py:181: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(pretrained_weights, map_location="cpu")
+dict_keys(['epoch', 'lossMIN', 'state_dict', 'teacher', 'optimizer', 'scheduler'])
+Loading teacher from checkpoint...
+Removing key head.weight from pretrained checkpoint
+Removing key head.bias from pretrained checkpoint
+Loaded with msg: _IncompatibleKeys(missing_keys=['head.weight', 'head.bias'], unexpected_keys=['projector.weight', 'projector.bias', 'omni_heads.0.weight', 'omni_heads.0.bias', 'omni_heads.1.weight', 'omni_heads.1.bias', 'omni_heads.2.weight', 'omni_heads.2.bias', 'omni_heads.3.weight', 'omni_heads.3.bias', 'omni_heads.4.weight', 'omni_heads.4.bias', 'omni_heads.5.weight', 'omni_heads.5.bias'])
+SwinTransformer(
+  (patch_embed): PatchEmbed(
+    (proj): Conv2d(3, 192, kernel_size=(4, 4), stride=(4, 4))
+    (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+  )
+  (pos_drop): Dropout(p=0.0, inplace=False)
+  (layers): Sequential(
+    (0): BasicLayer(
+      dim=192, input_resolution=(192, 192), depth=2
+      (blocks): ModuleList(
+        (0): SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): Identity()
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+        (1): SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(192, 192), dim=192
+        (reduction): Linear(in_features=768, out_features=384, bias=False)
+        (norm): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (1): BasicLayer(
+      dim=384, input_resolution=(96, 96), depth=2
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=384, out_features=1152, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=384, out_features=384, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=384, out_features=1536, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=1536, out_features=384, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(96, 96), dim=384
+        (reduction): Linear(in_features=1536, out_features=768, bias=False)
+        (norm): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (2): BasicLayer(
+      dim=768, input_resolution=(48, 48), depth=18
+      (blocks): ModuleList(
+        (0-17): 18 x SwinTransformerBlock(
+          (norm1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=768, out_features=2304, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=768, out_features=768, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=768, out_features=3072, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=3072, out_features=768, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+      (downsample): PatchMerging(
+        input_resolution=(48, 48), dim=768
+        (reduction): Linear(in_features=3072, out_features=1536, bias=False)
+        (norm): LayerNorm((3072,), eps=1e-05, elementwise_affine=True)
+      )
+    )
+    (3): BasicLayer(
+      dim=1536, input_resolution=(24, 24), depth=2
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=1536, out_features=4608, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=1536, out_features=1536, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+            (softmax): Softmax(dim=-1)
+          )
+          (drop_path): DropPath()
+          (norm2): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=1536, out_features=6144, bias=True)
+            (act): GELU(approximate='none')
+            (drop1): Dropout(p=0.0, inplace=False)
+            (fc2): Linear(in_features=6144, out_features=1536, bias=True)
+            (drop2): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (norm): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+  (avgpool): AdaptiveAvgPool1d(output_size=1)
+  (head): Linear(in_features=1536, out_features=19, bias=True)
+)
+===> freezing encoder...
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/timm/utils/cuda.py:40: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  self._scaler = torch.cuda.amp.GradScaler()
+Epoch: [0][  0/178]	Time  0.553 ( 0.553)	Loss 6.8074e-01 (6.8074e-01)
+Epoch: [0][ 50/178]	Time  0.129 ( 0.136)	Loss 3.4999e-01 (9.1397e-01)
+Epoch: [0][100/178]	Time  0.131 ( 0.133)	Loss 2.5093e-01 (1.0786e+00)
+Epoch: [0][150/178]	Time  0.135 ( 0.133)	Loss 2.0343e-01 (1.0010e+00)
+Val: [ 0/51]	Time  0.353 ( 0.353)	Loss 3.2117e-01 (3.2117e-01)
+Val: [50/51]	Time  0.137 ( 0.141)	Loss 4.2508e+00 (5.6484e+05)
+Epoch 0000: val_loss improved from 1000000.00000 to 564842.44496, saving model to ./Models/Classification/advCheX/swin_large_384_ark_plus/swin_large_384_ark_plus_run_0
+Epoch: [1][  0/178]	Time  0.345 ( 0.345)	Loss 1.8323e-01 (1.8323e-01)
+Epoch: [1][ 50/178]	Time  0.150 ( 0.146)	Loss 2.1788e-01 (6.1088e-01)
+Epoch: [1][100/178]	Time  0.149 ( 0.145)	Loss 6.7308e-01 (9.6159e-01)
+Epoch: [1][150/178]	Time  0.142 ( 0.147)	Loss 2.0410e-01 (7.3562e-01)
+Val: [ 0/51]	Time  0.356 ( 0.356)	Loss 3.2280e-01 (3.2280e-01)
+Val: [50/51]	Time  0.161 ( 0.154)	Loss 4.1838e+00 (5.9319e+05)
+Epoch 0001: val_loss did not improve from 564842.44496 
+Epoch: [2][  0/178]	Time  0.356 ( 0.356)	Loss 1.8134e-01 (1.8134e-01)
+Epoch: [2][ 50/178]	Time  0.158 ( 0.160)	Loss 2.1902e-01 (7.8204e-01)
+Epoch: [2][100/178]	Time  0.159 ( 0.160)	Loss 2.8737e-01 (5.7643e-01)
+Epoch: [2][150/178]	Time  0.159 ( 0.161)	Loss 1.0683e+01 (8.0593e-01)
+Val: [ 0/51]	Time  0.356 ( 0.356)	Loss 3.2432e-01 (3.2432e-01)
+Val: [50/51]	Time  0.160 ( 0.167)	Loss 4.0524e+00 (6.2532e+05)
+Epoch 0002: val_loss did not improve from 564842.44496 
+start testing.....
+>> Disease = ['Normal', 'ASD', 'VSD', 'PDA', 'TOF', 'MS', 'PS', 'AS', 'AR', 'MR', 'PAH', 'PFO', 'HCM', 'DCM', 'ARVC', 'CAD', 'HTN', 'Aneurysm', 'Other']
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+/home/pcl/anaconda3/envs/arktest2/lib/python3.8/site-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+[0.9976233839988708, 0.06943821907043457, 0.05264260992407799, 0.06648929417133331, 0.004347185138612986, 0.7951027750968933, 0.07528999447822571]
+>> Mean AUC = 0.8256 
+AUC = [1.    ,1.    ,0.98  ,0.9592,0.48  ,0.8386,0.5217]
+>> Mean MCC = 0.0899 
+MCC = [ 0.    , 0.    ,-0.02  , 0.2731,-0.1442, 0.4276, 0.0927]
+>> Mean AP = 0.6245 
+AP = [1.    ,1.    ,0.5   ,0.6667,0.037 ,0.9613,0.2068]
+>> Mean F1 = 0.1836 
+F1 = [0.    ,0.    ,0.    ,0.2857,0.    ,0.7887,0.2105]
+19 19
+19 19
+>> All trials: mAUC = [0.8256,0.8256,0.8256,0.8256,0.8256,0.8256]
+ mMCC = [0.0899,0.0899,0.0899,0.0899,0.0899,0.0899]
+ mAP = [0.6245,0.6245,0.6245,0.6245,0.6245,0.6245]
+ mF1 = [0.1836,0.1836,0.1836,0.1836,0.1836,0.1836]
+ 
+>> Mean / STD over All trials: aAUC = 0.8256(0.0000) aMCC = 0.0899(0.0000) aAP = 0.6245(0.0000) aF1 = 0.1836(0.0000)  
+
+
