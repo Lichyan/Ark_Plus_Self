@@ -86,13 +86,20 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight) #pos_weight_BCE阳性越少，权重越大，缓解CAD很多，其他几乎没有的倾斜
       model = build_classification_model(args)
       print(model)
-
+      
+      # Old freeze_encoder
+      # if args.freeze_encoder:
+      #   print("===> freezing encoder...")
+      #   ##freeze all layers but the head 
+      #   for name, param in model.named_parameters():
+      #     if name not in ['head.weight', 'head.bias']:
+      #         param.requires_grad = False
+      
+      # New freeze_encoder to ensure the linear probing
       if args.freeze_encoder:
-        print("===> freezing encoder...")
-        ##freeze all layers but the head 
-        for name, param in model.named_parameters():
-          if name not in ['head.weight', 'head.bias']:
-              param.requires_grad = False
+        print("===> freezing encoder (linear probe)...")
+        for name, p in model.named_parameters():
+          p.requires_grad = (name in ['head.weight', 'head.bias'])
 
       if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
@@ -104,7 +111,20 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       # optimizer = torch.optim.SGD(parameters, lr=args.lr, weight_decay=0, momentum=args.momentum, nesterov=False)
       # lr_scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=args.patience // 2, mode='min',
       #                                  threshold=0.0001, min_lr=0, verbose=True)
-      optimizer = create_optimizer(args, model)
+      
+      # New freeze_encoder to ensure the linear probing
+      if args.freeze_encoder:
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        names = [n for n,p in model.named_parameters() if p.requires_grad]
+        print(f"[DEBUG] params total={total}, trainable={trainable}")
+        print(f"[DEBUG] trainable names: {names}")
+      trainable = [p for p in model.parameters() if p.requires_grad]
+
+      optimizer = create_optimizer(args, trainable)
+      
+      # Old freeze_encoder
+      #optimizer = create_optimizer(args, model)
       loss_scaler = NativeScaler()
 
       lr_scheduler, _ = create_scheduler(args, optimizer)
@@ -318,4 +338,5 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         accuracy = np.array(accuracy)
         print(">> All trials: ACCURACY  = {}".format(np.array2string(accuracy, precision=4, separator=',')))
         writer.write("All trials: ACCURACY  = {}\n".format(np.array2string(accuracy, precision=4, separator='\t')))
+      
       
