@@ -8,6 +8,7 @@ from optparse import OptionParser
 from tqdm import tqdm
 import copy
 import csv
+import pandas as pd
 
 from models import build_classification_model, save_checkpoint
 from utils import *
@@ -15,13 +16,14 @@ from sklearn.metrics import accuracy_score
 
 import torch
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.data.dataloader import default_collate
 from trainer import train_one_epoch, evaluate, test_classification, test_model
 
 from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 from timm.utils import NativeScaler
+import torch.nn.functional as F
 
 sys.setrecursionlimit(40000)
 
@@ -31,6 +33,24 @@ def safe_collate(batch):
     if len(batch) == 0:
         return None
     return default_collate(batch)
+
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        bce = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce)
+        loss = self.alpha * (1 - pt) ** self.gamma * bce
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
 
 def classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test, test_diseases=None):
   device = torch.device(args.device)
@@ -49,8 +69,17 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                             num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)  
   # training phase
   if args.mode == "train":
-    data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, shuffle=True,
-                                   num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
+    if args.train_weights is not None:
+      df_w = pd.read_csv(args.train_weights)
+      weight_map = dict(zip(df_w['Path'], df_w['sample_weight']))
+      rel_paths = [os.path.relpath(p, args.data_dir) for p in dataset_train.img_list]
+      weights = [weight_map.get(rp, 1.0) for rp in rel_paths]
+      sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+      data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, sampler=sampler,
+                                     num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
+    else:
+      data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, shuffle=True,
+                                     num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
     data_loader_val = DataLoader(dataset=dataset_val, batch_size=args.batch_size, shuffle=False,
                                  num_workers=args.workers, pin_memory=True)
                            
@@ -66,7 +95,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       best_val_loss = init_loss
       patience_counter = 0
       save_model_path = os.path.join(model_path, experiment)
-      criterion = torch.nn.BCEWithLogitsLoss()
+      if args.loss_fn.lower() == 'focal':
+        criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
+        print("use FocalLoss...")
+      else:
+        criterion = torch.nn.BCEWithLogitsLoss()
       if args.data_set in ["RSNAPneumonia", "COVIDx"]:
         criterion = torch.nn.CrossEntropyLoss()
         print("use CrossEntropyLoss...")
