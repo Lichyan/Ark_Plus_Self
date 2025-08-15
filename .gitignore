@@ -1,6 +1,10 @@
 # 忽略数据集文件夹
 Finetuning/advCheX_old_test/
 Finetuning/advCheX_test/
+Finetuning/advCheX_test_7_2_1/
+Finetuning/dataset/advCheX _7_2_1/
+dataset/advCheX_7_2_1/
+
 
 # 忽略模型文件夹和文件
 Finetuning/Models/
