@@ -86,9 +86,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
     log_file = os.path.join(model_path, "models.log")
 
     # training phase
-    print("start training....")
+    print("start training....", flush=True)
     for i in range(args.start_index, args.num_trial):
-      print ("run:",str(i+1))
+      print("run:", str(i+1), flush=True)
       start_epoch = 0
       init_loss = 1000000
       experiment = args.exp_name + "_run_" + str(i)
@@ -97,14 +97,14 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       save_model_path = os.path.join(model_path, experiment)
       if args.loss_fn.lower() == 'focal':
         criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
-        print("use FocalLoss...")
+        print("use FocalLoss...", flush=True)
       else:
         criterion = torch.nn.BCEWithLogitsLoss()
       if args.data_set in ["RSNAPneumonia", "COVIDx"]:
         criterion = torch.nn.CrossEntropyLoss()
-        print("use CrossEntropyLoss...")
+        print("use CrossEntropyLoss...", flush=True)
       if args.data_set in ["advCheXX"]:
-        print("[DEBUG]...use pos_weight_BCE...")
+        print("[DEBUG]...use pos_weight_BCE...", flush=True)
         pos = np.zeros(args.num_class, dtype=np.float32)
         N = len(dataset_train)
         for lab in dataset_train.img_label:
@@ -150,23 +150,22 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         names = [n for n,p in model.named_parameters() if p.requires_grad]
-        print(f"[DEBUG] params total={total}, trainable={trainable}")
-        print(f"[DEBUG] trainable names: {names}")
+        print(f"[DEBUG] params total={total}, trainable={trainable}", flush=True)
+        print(f"[DEBUG] trainable names: {names}", flush=True)
       trainable = [p for p in model.parameters() if p.requires_grad]
 
       optimizer = create_optimizer(args, trainable)
-      
+
       # Old freeze_encoder
       #optimizer = create_optimizer(args, model)
-      loss_scaler = NativeScaler()
 
       lr_scheduler, _ = create_scheduler(args, optimizer)
 
       if args.resume:
         resume = os.path.join(model_path, experiment + '.pth.tar')
         if os.path.isfile(resume):
-          print("=> loading checkpoint '{}'".format(resume))
-          checkpoint = torch.load(resume)
+          print("=> loading checkpoint '{}'".format(resume), flush=True)
+          checkpoint = torch.load(resume, weights_only=True)
 
           start_epoch = checkpoint['epoch']
           init_loss = checkpoint['lossMIN']
@@ -175,9 +174,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           optimizer.load_state_dict(checkpoint['optimizer'])
           best_val_loss = init_loss
           print("=> loaded checkpoint '{}' (epoch={:04d}, val_loss={:.5f})"
-                .format(resume, start_epoch, init_loss))
+                .format(resume, start_epoch, init_loss), flush=True)
         else:
-          print("=> no checkpoint found at '{}'".format(args.resume))
+          print("=> no checkpoint found at '{}'".format(args.resume), flush=True)
 
       mean_result_list, result_list = [], []
       accuracy = []
