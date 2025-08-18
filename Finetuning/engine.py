@@ -22,6 +22,7 @@ from trainer import train_one_epoch, evaluate, test_classification, test_model
 
 from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
+from timm.utils import NativeScaler
 import torch.nn.functional as F
 
 sys.setrecursionlimit(40000)
