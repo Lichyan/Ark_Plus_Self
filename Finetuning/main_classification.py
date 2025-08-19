@@ -28,7 +28,7 @@ def get_args_parser():
     parser.add_option("--pretrained_weights", dest="pretrained_weights", help="Path to the Pretrained model", default=None, type="string")
     parser.add_option("--num_class", dest="num_class", help="number of the classes in the downstream task",
                       default=14, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -41,6 +41,7 @@ def get_args_parser():
                       default=None, type="string")
     parser.add_option("--test_list", dest="test_list", help="file for test list",
                       default=None, type="string")
+    parser.add_option("--train_weights", dest="train_weights", help="optional sampling weight file for training", default=None, type="string")
     parser.add_option("--mode", dest="mode", help="train | test", default="train", type="string")
     parser.add_option("--batch_size", dest="batch_size", help="batch size", default=64, type="int")
     parser.add_option("--epochs", dest="epochs", help="num of epoches", default=200, type="int")
@@ -116,6 +117,9 @@ def get_args_parser():
                       default=0, type="int")
     parser.add_option("--weighted_BCELoss", dest="weighted_BCELoss", help="whether use weighted BCELoss", default=False, action="callback",
                       callback=vararg_callback_bool)
+    parser.add_option("--loss_fn", dest="loss_fn", help="loss function: bce | focal", default="bce", type="string")
+    parser.add_option("--focal_alpha", dest="focal_alpha", help="alpha for focal loss", default=0.25, type="float")
+    parser.add_option("--focal_gamma", dest="focal_gamma", help="gamma for focal loss", default=2.0, type="float")
     parser.add_option('--few_shot', dest="few_shot", help='number or percentage of training samples', default=-1, type=float)
 
 
@@ -375,7 +379,50 @@ def main(args):
         _summ(dataset_test,  "test")
         
         # 启动分类训练引擎
-        classification_engine(args, model_path, output_path, diseases, 
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_binary":
+        diseases = ['CHD', 'nonCHD']
+        if args.mode == "train":
+            dataset_train = advCheX_binary(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                num_class=2,
+                few_shot=args.few_shot
+            )
+            dataset_val = advCheX_binary(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                num_class=2
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+        dataset_test = advCheX_binary(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+            num_class=2
+        )
+        classification_engine(args, model_path, output_path, diseases,
                              dataset_train, dataset_val, dataset_test)
 
 

@@ -71,10 +71,14 @@ def evaluate(data_loader_val, device, model, criterion):
 
 
 def test_classification(checkpoint, data_loader_test, device, args):
-  print('[DEBUG] ...heyheyhey:test_clasification')
+  print('[DEBUG] ...heyheyhey:test_clasification', flush=True)
   model = build_classification_model(args)
 
-  modelCheckpoint = torch.load(checkpoint)
+  try:
+    modelCheckpoint = torch.load(checkpoint, weights_only=True)
+  except Exception as e:
+    print(f"[WARN] weights_only load failed: {e}. Falling back to weights_only=False", flush=True)
+    modelCheckpoint = torch.load(checkpoint)
   state_dict = modelCheckpoint['state_dict']
   for k in list(state_dict.keys()):
     if k.startswith('module.'):
@@ -83,7 +87,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
 
   msg = model.load_state_dict(state_dict)
   assert len(msg.missing_keys) == 0
-  print("=> loaded pre-trained model '{}'".format(checkpoint))
+  print("=> loaded pre-trained model '{}'".format(checkpoint), flush=True)
 
   if torch.cuda.device_count() > 1:
     model = torch.nn.DataParallel(model)
@@ -114,13 +118,13 @@ def test_classification(checkpoint, data_loader_test, device, args):
       out = model(varInput)
       if not printed:
         h = model.module.head if hasattr(model, 'module') else model.head
-        print('[DEBUG] head.weight mean abs:', h.weight.abs().mean().item())
+        print('[DEBUG] head.weight mean abs:', h.weight.abs().mean().item(), flush=True)
         print('[DEBUG] head.bias sigmoid :',
-              torch.sigmoid(h.bias.detach()).cpu().numpy().round(4).tolist())
+              torch.sigmoid(h.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         print('[DEBUG] first batch input  mean/std:',
-              samples.mean().item(), samples.std().item())
+              samples.mean().item(), samples.std().item(), flush=True)
         print('[DEBUG] first batch output mean/std:',
-              out.mean().item(), out.std().item())
+              out.mean().item(), out.std().item(), flush=True)
         printed = True
       if args.data_set in ["RSNAPneumonia", "COVIDx"]:
         out = torch.softmax(out,dim = 1)
@@ -132,7 +136,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
   return y_test, p_test
 
 def test_model(model, data_loader_test, args):
-  print('[DEBUG] ...heyheyhey:test_model')
+  print('[DEBUG] ...heyheyhey:test_model', flush=True)
   model.eval()
   
   y_test = torch.FloatTensor().cuda()
@@ -158,13 +162,13 @@ def test_model(model, data_loader_test, args):
       out = model(varInput)
       if not printed:
         h = model.module.head if hasattr(model, 'module') else model.head
-        print('[DEBUG] head.weight mean abs:', h.weight.abs().mean().item())
+        print('[DEBUG] head.weight mean abs:', h.weight.abs().mean().item(), flush=True)
         print('[DEBUG] head.bias sigmoid :',
-              torch.sigmoid(h.bias.detach()).cpu().numpy().round(4).tolist())
+              torch.sigmoid(h.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         print('[DEBUG] first batch input  mean/std:',
-              samples.mean().item(), samples.std().item())
+              samples.mean().item(), samples.std().item(), flush=True)
         print('[DEBUG] first batch output mean/std:',
-              out.mean().item(), out.std().item())
+              out.mean().item(), out.std().item(), flush=True)
         printed = True
       if args.data_set in ["RSNAPneumonia", "COVIDx"]:
         out = torch.softmax(out,dim = 1)
@@ -173,7 +177,7 @@ def test_model(model, data_loader_test, args):
       outMean = out.view(bs, n_crops, -1).mean(1)
       if i < 3:
         diffs = (outMean - outMean[0]).abs().max().item()
-        print(f"[DEBUG] batch {i} max_diff_to_sample0={diffs:.6f}") #检查 batch 内预测是否几乎相同
+        print(f"[DEBUG] batch {i} max_diff_to_sample0={diffs:.6f}", flush=True) #检查 batch 内预测是否几乎相同
       p_test = torch.cat((p_test, outMean.data), 0)
 
   return y_test, p_test
