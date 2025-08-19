@@ -22,7 +22,6 @@ from trainer import train_one_epoch, evaluate, test_classification, test_model
 
 from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
-from timm.utils import NativeScaler
 import torch.nn.functional as F
 
 sys.setrecursionlimit(40000)
@@ -165,7 +164,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         resume = os.path.join(model_path, experiment + '.pth.tar')
         if os.path.isfile(resume):
           print("=> loading checkpoint '{}'".format(resume), flush=True)
-          checkpoint = torch.load(resume, weights_only=True)
+          try:
+            checkpoint = torch.load(resume, weights_only=True)
+          except Exception as e:
+            print(f"[WARN] weights_only load failed: {e}. Falling back to weights_only=False", flush=True)
+            checkpoint = torch.load(resume)
 
           start_epoch = checkpoint['epoch']
           init_loss = checkpoint['lossMIN']
