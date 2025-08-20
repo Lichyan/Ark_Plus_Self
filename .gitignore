@@ -18,4 +18,5 @@ Finetuning/Outputs/Classification/advCheX/
 # 忽略其他临时文件
 *.log
 *.pth
+*.sh
 __pycache__/
