@@ -423,6 +423,7 @@ def main(args):
             num_class=2
         )
         classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
 
     elif args.data_set == "advCheX_hyp":
         label_names = None
