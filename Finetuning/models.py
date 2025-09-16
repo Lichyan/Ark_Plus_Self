@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import roc_auc_score
@@ -178,7 +179,14 @@ def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = No
     if pretrained_weights.startswith('https'):
         checkpoint = load_state_dict_from_url(url=pretrained_weights, map_location='cpu')
     else:
-        checkpoint = torch.load(pretrained_weights, map_location="cpu")
+        try:
+            checkpoint = torch.load(pretrained_weights, map_location="cpu", weights_only=True)
+        except (TypeError, RuntimeError, pickle.UnpicklingError) as err:
+            print(
+                "[WARN] weights_only 加载失败，将回退到安全可信环境下的完整反序列化。"
+                f" 原因: {err}"
+            )
+            checkpoint = torch.load(pretrained_weights, map_location="cpu", weights_only=False)
     print(checkpoint.keys())
     
     if 'state_dict' in checkpoint:
