@@ -178,7 +178,7 @@ def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = No
     if pretrained_weights.startswith('https'):
         checkpoint = load_state_dict_from_url(url=pretrained_weights, map_location='cpu')
     else:
-        checkpoint = torch.load(pretrained_weights, map_location="cpu")
+        checkpoint = torch.load(pretrained_weights, map_location="cpu", weights_only=True)
     print(checkpoint.keys())
     
     if 'state_dict' in checkpoint:

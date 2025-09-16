@@ -1,0 +1,49 @@
+高血压 vs 非高血压（Hypertension vs nonHypertension）二分类实验流程
+
+1. 数据准备
+   - 确认已经按照既有流程生成 `advCheX_Hyp_kf` 数据集结构：
+     - `advCheX_Hyp_kf/test.csv`
+     - `advCheX_Hyp_kf/fold{0-4}/{train,valid}.csv`
+     - `advCheX_Hyp_kf/fold{0-4}/train_weights.csv`
+     - 图像放置在 `advCheX_Hyp_kf/{train,test}/patient<id>/study1/view1_frontal.jpg`
+   - CSV 表头需形如 `Path,Hypertension,nonHypertension`。
+
+2. 进入 `Finetuning` 目录执行 5 折交叉验证训练（示例：第 0 折）
+```
+CUDA_VISIBLE_DEVICES=0 \
+python main_classification.py --data_set advCheX_hyp \
+  --data_dir ../advCheX_Hyp_kf \
+  --train_list ../advCheX_Hyp_kf/fold0/train.csv \
+  --val_list   ../advCheX_Hyp_kf/fold0/valid.csv \
+  --test_list  ../advCheX_Hyp_kf/test.csv \
+  --train_weights ../advCheX_Hyp_kf/fold0/train_weights.csv \
+  --mode train --batch_size 4 --num_class 2 \
+  --model swin_large_384 --init ark_plus --key teacher \
+  --img_size 448 --input_size 384 --scale_up True \
+  --loss_fn focal --focal_alpha 0.25 --focal_gamma 2.0 \
+  --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar \
+  --workers 0 --test_augment True 2>&1 | tee FT_hyp_fold0.log
+```
+   - 其它折仅需调整 `fold{0-4}` 与日志文件名。
+   - 若提供 `--exp_name _foldX` 可避免模型文件互相覆盖。
+
+3. 线性探测（冻结编码器）
+   - 在上述命令中追加 `--freeze_encoder True`。
+
+4. 仅测试（跳过训练）
+```
+CUDA_VISIBLE_DEVICES=0 \
+python main_classification.py --data_set advCheX_hyp \
+  --data_dir ../advCheX_Hyp_kf \
+  --test_list  ../advCheX_Hyp_kf/test.csv \
+  --mode test --batch_size 4 --num_class 2 \
+  --model swin_large_384 --init ark_plus --key teacher \
+  --img_size 448 --input_size 384 --scale_up True \
+  --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar \
+  --workers 0 --test_augment True 2>&1 | tee FT_hyp_test.log
+```
+   - 如需加载特定折的最佳模型，可通过 `--resume` 传入对应 `.pth.tar`。
+
+5. 说明
+   - 该新增任务与 `advCheX_binary` 共存，原有 CHD vs nonCHD 的指令完全保持可用。
+   - 采样权重读取逻辑与 CHD 任务一致，需保证 `train_weights.csv` 中的 `Path` 与训练 CSV 使用相对路径保持一致。
