@@ -74,11 +74,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
   print('[DEBUG] ...heyheyhey:test_clasification', flush=True)
   model = build_classification_model(args)
 
-  try:
-    modelCheckpoint = torch.load(checkpoint, weights_only=True)
-  except Exception as e:
-    print(f"[WARN] weights_only load failed: {e}. Falling back to weights_only=False", flush=True)
-    modelCheckpoint = torch.load(checkpoint)
+  modelCheckpoint = torch.load(checkpoint, weights_only=True)
   state_dict = modelCheckpoint['state_dict']
   for k in list(state_dict.keys()):
     if k.startswith('module.'):

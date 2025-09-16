@@ -1,0 +1,33 @@
+第一阶段：数据预处理
+1. 在仓库根目录运行 `first.ipynb`，生成 `advCheX_Inter` 中间数据集，内含：
+   - 目录结构 `advCheX_Inter/{train,test}/patient<id>/study1/view1_frontal.jpg`
+   - `train.csv`、`test.csv`、`train_weights.csv`、`parsed_annotations.csv`、`qa_report.csv`、`README_phaseA.txt`
+
+第二阶段：K 折划分
+2. 运行 `second.ipynb`，基于 `advCheX_Inter` 构建 `advCheX_kf` 数据集：
+   - 拷贝图片到 `advCheX_kf/{train,test}`
+   - 生成 `advCheX_kf/test.csv`
+   - 对训练集做 5 折划分，得到 `advCheX_kf/fold{0-4}/{train,valid}.csv` 及对应 `train_weights.csv`
+
+第三阶段：模型训练/测试
+3. 进入 `Finetuning` 目录执行训练（以第 0 折为例）：
+```
+CUDA_VISIBLE_DEVICES=0 \
+python main_classification.py --data_set advCheX_binary \
+  --data_dir ../advCheX_kf \
+  --train_list ../advCheX_kf/fold0/train.csv \
+  --val_list   ../advCheX_kf/fold0/valid.csv \
+  --test_list  ../advCheX_kf/test.csv \
+  --train_weights ../advCheX_kf/fold0/train_weights.csv \
+  --mode train --batch_size 4 --num_class 2 \
+  --model swin_large_384 --init ark_plus --key teacher \
+  --img_size 448 --input_size 384 --scale_up True \
+  --loss_fn focal --focal_alpha 0.25 --focal_gamma 2.0 \
+  --pretrained_weights ./Ark6_swinLarge768_ep50.pth.tar \
+  --workers 0 --test_augment True 2>&1 | tee FT_fold0.log
+```
+
+4. 线性探测仅需在上述命令中加入 `--freeze_encoder True`。
+
+说明：旧有三分类数据集 `advCheX` 仍可使用原有指令，不受本次修改影响。
+

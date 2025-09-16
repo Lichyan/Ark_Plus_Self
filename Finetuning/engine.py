@@ -164,12 +164,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         resume = os.path.join(model_path, experiment + '.pth.tar')
         if os.path.isfile(resume):
           print("=> loading checkpoint '{}'".format(resume), flush=True)
-          try:
-            checkpoint = torch.load(resume, weights_only=True)
-          except Exception as e:
-            print(f"[WARN] weights_only load failed: {e}. Falling back to weights_only=False", flush=True)
-            checkpoint = torch.load(resume)
-
+          checkpoint = torch.load(resume, weights_only=True)
           start_epoch = checkpoint['epoch']
           init_loss = checkpoint['lossMIN']
           model.load_state_dict(checkpoint['state_dict'])
