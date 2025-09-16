@@ -165,7 +165,6 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         if os.path.isfile(resume):
           print("=> loading checkpoint '{}'".format(resume), flush=True)
           checkpoint = torch.load(resume, weights_only=True)
-
           start_epoch = checkpoint['epoch']
           init_loss = checkpoint['lossMIN']
           model.load_state_dict(checkpoint['state_dict'])
