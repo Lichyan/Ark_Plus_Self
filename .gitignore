@@ -14,9 +14,13 @@ Finetuning/advCheX_kf/test
 
 #忽略之前模型输出的结果文件
 Finetuning/Outputs/Classification/advCheX/
+Finetuning/Outputs/Classification/advCheX_binary/
 
 # 忽略其他临时文件
 *.log
 *.pth
 *.sh
 __pycache__/
+
+
+
