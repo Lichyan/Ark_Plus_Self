@@ -1,12 +1,34 @@
 # 忽略数据集文件夹
 Finetuning/advCheX_old_test/
 Finetuning/advCheX_test/
+Finetuning/advCheX_test_7_2_1/
+Finetuning/dataset/advCheX _7_2_1/
+dataset/advCheX_7_2_1/
+
 
 # 忽略模型文件夹和文件
 Finetuning/Models/
 Finetuning/Ark6_swinLarge768_ep50.pth.tar
+Finetuning/advCheX_kf/train
+Finetuning/advCheX_kf/test
+Finetuning/advCheX_Hyp_kf/
+Finetuning/advCheX_Hyp_kf_seed50/
+Finetuning/advCheX_Hyp_hebei_kf/
+
+
+#忽略之前模型输出的结果文件
+Finetuning/Outputs/Classification/advCheX/
+Finetuning/Outputs/Classification/advCheX_binary/
+Finetuning/Outputs/Classification/advCheX_hyp/
+
+#忽略奇怪的.py
+Finetuning/logs_reader.py
 
 # 忽略其他临时文件
 *.log
 *.pth
+*.sh
 __pycache__/
+
+
+
