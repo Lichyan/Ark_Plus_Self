@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import roc_auc_score
@@ -22,6 +23,7 @@ import simmim
 from convnext import ConvNeXt
 from resnet import ResNet50
 from utils import load_swin_pretrained
+from lora import inject_lora, freeze_non_lora_parameters
 
 def build_classification_model(args):
     model = None
@@ -171,14 +173,43 @@ def build_classification_model(args):
     if model is None:
         print("Not provide {} pretrained weights for {}.".format(args.init, args.model_name))
         raise Exception("Please provide correct parameters to load the model!")
-    return model  
+
+    if getattr(args, "use_lora", False):
+        target_tokens = [token.strip() for token in args.lora_targets.split(',') if token.strip()]
+        replaced = list(inject_lora(
+            model,
+            target_tokens,
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+        ))
+        if not replaced:
+            print(f"[LoRA] 未匹配到需要注入的模块，请检查 --lora_targets={args.lora_targets}")
+        else:
+            preview = ', '.join(replaced[:5])
+            if len(replaced) > 5:
+                preview += f", ... (共 {len(replaced)} 层)"
+            print(f"[LoRA] 已注入的模块: {preview}")
+        freeze_non_lora_parameters(model, keep_head=getattr(args, "lora_train_head", True))
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"[LoRA] 可训练参数量: {trainable:,} / {total:,}")
+
+    return model
     
 
 def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = None, scale_up = False):
     if pretrained_weights.startswith('https'):
         checkpoint = load_state_dict_from_url(url=pretrained_weights, map_location='cpu')
     else:
-        checkpoint = torch.load(pretrained_weights, map_location="cpu")
+        try:
+            checkpoint = torch.load(pretrained_weights, map_location="cpu", weights_only=True)
+        except (TypeError, RuntimeError, pickle.UnpicklingError) as err:
+            print(
+                "[WARN] weights_only 加载失败，将回退到安全可信环境下的完整反序列化。"
+                f" 原因: {err}"
+            )
+            checkpoint = torch.load(pretrained_weights, map_location="cpu", weights_only=False)
     print(checkpoint.keys())
     
     if 'state_dict' in checkpoint:
