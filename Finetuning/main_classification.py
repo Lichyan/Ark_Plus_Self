@@ -49,6 +49,17 @@ def get_args_parser():
     parser.add_option("--key", help="key name in the pretrained checkpoint", default="state_dict")
     parser.add_option("--freeze_encoder", dest="freeze_encoder", help="whether freeze encoder", default=False, action="callback",
                       callback=vararg_callback_bool)
+    parser.add_option("--use_lora", dest="use_lora", help="whether enable LoRA adapters", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--lora_rank", dest="lora_rank", help="LoRA rank", default=8, type="int")
+    parser.add_option("--lora_alpha", dest="lora_alpha", help="LoRA alpha scaling", default=16.0, type="float")
+    parser.add_option("--lora_dropout", dest="lora_dropout", help="LoRA dropout", default=0.0, type="float")
+    parser.add_option("--lora_targets", dest="lora_targets",
+                      help="comma separated module name patterns to inject LoRA",
+                      default="attn.qkv,attn.proj,mlp.fc1,mlp.fc2", type="string")
+    parser.add_option("--lora_train_head", dest="lora_train_head",
+                      help="keep classification head trainable when using LoRA", default=True,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--skip_training", dest="skip_training", help="whether skip training", default=False, action="callback",
                       callback=vararg_callback_bool)
     parser.add_option("--test_every_epoch", dest="test_every_epoch", help="whether skip training", default=False, action="callback",

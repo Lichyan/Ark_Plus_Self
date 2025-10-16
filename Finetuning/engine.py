@@ -128,7 +128,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       #         param.requires_grad = False
       
       # New freeze_encoder to ensure the linear probing
-      if args.freeze_encoder:
+      if args.freeze_encoder and not getattr(args, "use_lora", False):
         print("===> freezing encoder (linear probe)...")
         for name, p in model.named_parameters():
           p.requires_grad = (name in ['head.weight', 'head.bias'])
@@ -145,7 +145,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       #                                  threshold=0.0001, min_lr=0, verbose=True)
       
       # New freeze_encoder to ensure the linear probing
-      if args.freeze_encoder:
+      if args.freeze_encoder and not getattr(args, "use_lora", False):
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         names = [n for n,p in model.named_parameters() if p.requires_grad]
@@ -165,6 +165,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         if os.path.isfile(resume):
           print("=> loading checkpoint '{}'".format(resume), flush=True)
           checkpoint = torch.load(resume, weights_only=True)
+
           start_epoch = checkpoint['epoch']
           init_loss = checkpoint['lossMIN']
           model.load_state_dict(checkpoint['state_dict'])
