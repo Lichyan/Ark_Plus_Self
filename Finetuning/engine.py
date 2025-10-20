@@ -257,6 +257,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           writer.write("=====> Max result:  {} at epoch {}\n".format(best_rest, best_epoch))
           writer.write("mAUC, mMCC, mAP, mF1 = {}\n".format(result_list[best_epoch]))
  
+  if args.mode == "train" and getattr(args, "skip_test", False):
+    return
+
   print ("start testing.....")
 
 

@@ -25,6 +25,17 @@ from resnet import ResNet50
 from utils import load_swin_pretrained
 from lora import inject_lora, freeze_non_lora_parameters
 
+try:
+    from torch.serialization import add_safe_globals
+except ImportError:  # pragma: no cover - older torch versions
+    add_safe_globals = None
+
+if add_safe_globals is not None:
+    try:
+        add_safe_globals([np.core.multiarray.scalar])
+    except AttributeError:
+        pass
+
 def build_classification_model(args):
     model = None
     print("Creating model...")
@@ -130,45 +141,93 @@ def build_classification_model(args):
                         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
                         norm_layer=partial(nn.LayerNorm, eps=1e-6))
                 model.default_cfg = _cfg()
-                load_pretrained_weights(model, args.init.lower(), args.pretrained_weights)
+                load_pretrained_weights(
+                    model,
+                    args.init.lower(),
+                    args.pretrained_weights,
+                    keep_head=getattr(args, "keep_head", False),
+                )
             
         elif args.model_name.lower() == "vit_small":
             model = VisionTransformer(num_classes=args.num_class,
                     patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
                     norm_layer=partial(nn.LayerNorm, eps=1e-6))
             model.default_cfg = _cfg()
-            load_pretrained_weights(model, args.init.lower(), args.pretrained_weights)  
+            load_pretrained_weights(
+                model,
+                args.init.lower(),
+                args.pretrained_weights,
+                keep_head=getattr(args, "keep_head", False),
+            )
             
         elif args.model_name.lower() == "swin_large":
             model = SwinTransformer(num_classes=args.num_class, img_size = args.input_size,
                 patch_size=4, window_size=7, embed_dim=192, depths=(2, 2, 18, 2), num_heads=(6, 12, 24, 48))
-            load_pretrained_weights(model, args.init.lower(), args.pretrained_weights, args.key, args.scale_up)
+            load_pretrained_weights(
+                model,
+                args.init.lower(),
+                args.pretrained_weights,
+                args.key,
+                args.scale_up,
+                getattr(args, "keep_head", False),
+            )
             
         elif args.model_name.lower() == "swin_large_384":
             model = SwinTransformer(num_classes=args.num_class, img_size = args.input_size, 
                 patch_size=4, window_size=12, embed_dim=192, depths=(2, 2, 18, 2), num_heads=(6, 12, 24, 48))
-            load_pretrained_weights(model, args.init.lower(), args.pretrained_weights, args.key, args.scale_up)
+            load_pretrained_weights(
+                model,
+                args.init.lower(),
+                args.pretrained_weights,
+                args.key,
+                args.scale_up,
+                getattr(args, "keep_head", False),
+            )
         
         elif args.model_name.lower() == "swin_base":
             if args.init.lower() == "simmim":
                 model = simmim.create_model(args)
             elif args.init.lower() =="imagenet_1k":
                 model = timm.create_model('swin_base_patch4_window7_224', num_classes=args.num_class)
-                load_pretrained_weights(model, args.init.lower(), args.pretrained_weights)  
+                load_pretrained_weights(
+                    model,
+                    args.init.lower(),
+                    args.pretrained_weights,
+                    keep_head=getattr(args, "keep_head", False),
+                )
             else:
                 model = SwinTransformer(num_classes=args.num_class, img_size = args.input_size,
                     patch_size=4, window_size=7, embed_dim=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32))
-                load_pretrained_weights(model, args.init.lower(), args.pretrained_weights, args.key, args.scale_up)  
+                load_pretrained_weights(
+                    model,
+                    args.init.lower(),
+                    args.pretrained_weights,
+                    args.key,
+                    args.scale_up,
+                    getattr(args, "keep_head", False),
+                )
                 
         elif args.model_name.lower() == "swin_tiny": 
             model = timm.create_model('swin_tiny_patch4_window7_224', num_classes=args.num_class)
-            load_pretrained_weights(model, args.init.lower(), args.pretrained_weights)
+            load_pretrained_weights(
+                model,
+                args.init.lower(),
+                args.pretrained_weights,
+                keep_head=getattr(args, "keep_head", False),
+            )
             
         elif args.model_name.lower() == "convx_base":
           if args.init.lower().startswith("ark"):
                 model = ConvNeXt(num_classes=args.num_class,
                      depths=[3, 3, 27, 3], dims=[128, 256, 512, 1024])
-                load_pretrained_weights(model, args.init.lower(), args.pretrained_weights, args.key)   
+                load_pretrained_weights(
+                    model,
+                    args.init.lower(),
+                    args.pretrained_weights,
+                    args.key,
+                    False,
+                    getattr(args, "keep_head", False),
+                )
           
     if model is None:
         print("Not provide {} pretrained weights for {}.".format(args.init, args.model_name))
@@ -198,7 +257,7 @@ def build_classification_model(args):
     return model
     
 
-def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = None, scale_up = False):
+def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key=None, scale_up=False, keep_head=False):
     if pretrained_weights.startswith('https'):
         checkpoint = load_state_dict_from_url(url=pretrained_weights, map_location='cpu')
     else:
@@ -241,7 +300,7 @@ def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = No
     elif init.startswith("ark"): 
         print("Loading {} from checkpoint...".format(checkpoint_key))
         state_dict = checkpoint[checkpoint_key]
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items() }  
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items() }
   
     else:
         print("Trying to load the checkpoint for {} at {}, but we cannot guarantee the success.".format(init, pretrained_weights))
@@ -255,10 +314,13 @@ def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key = No
         for k in k_del:
             del state_dict[k]
 
-    for k in ['head.weight', 'head.bias', 'head_dist.weight', 'head_dist.bias']:
-        if k in state_dict:
-            print(f"Removing key {k} from pretrained checkpoint")
-            del state_dict[k]
+    if not keep_head:
+        for k in ['head.weight', 'head.bias', 'head_dist.weight', 'head_dist.bias']:
+            if k in state_dict:
+                print(f"Removing key {k} from pretrained checkpoint")
+                del state_dict[k]
+    else:
+        print("Preserving classification head weights from checkpoint")
     msg = model.load_state_dict(state_dict, strict=False)
     print('Loaded with msg: {}'.format(msg)) 
 
