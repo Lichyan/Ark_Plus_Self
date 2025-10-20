@@ -66,6 +66,10 @@ def get_args_parser():
                       callback=vararg_callback_bool)
     parser.add_option("--scale_up", dest="scale_up", help="whether scale up resolution", default=False, action="callback",
                       callback=vararg_callback_bool)
+    parser.add_option("--keep_head", dest="keep_head", help="retain head.* weights when loading checkpoint", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--skip_test", dest="skip_test", help="skip evaluation after training", default=False,
+                      action="callback", callback=vararg_callback_bool)
     # Optimizer parameters
     parser.add_option('--opt', default='momentum', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
