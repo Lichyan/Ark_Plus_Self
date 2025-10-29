@@ -1,4 +1,4 @@
-from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef
+from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score
 import torch
 import numpy as np
 
@@ -102,6 +102,8 @@ def meanAUC(ground_truth, predictions):
 def meanF1(ground_truth, predictions):
     # Compute mean F1 score (mF1)
     f1_scores = []
+    optimal_thresholds = []
+    recall_scores = []
     for i in range(ground_truth.shape[1]):
         if np.any(ground_truth[:, i]):
             fpr, tpr, thresholds = roc_curve(ground_truth[:, i], predictions[:, i])
@@ -109,10 +111,13 @@ def meanF1(ground_truth, predictions):
             optimal_threshold = thresholds[np.argmax(youden_j)]
             binary_predictions = (predictions[:, i] > optimal_threshold).astype(int)
             f1 = f1_score(ground_truth[:, i], binary_predictions)
+            recall = recall_score(ground_truth[:, i], binary_predictions)
             f1_scores.append(f1)
+            optimal_thresholds.append(optimal_threshold)
+            recall_scores.append(recall)
 
     mf1_score = np.mean(f1_scores)
-    return mf1_score, f1_scores
+    return mf1_score, f1_scores, optimal_thresholds, recall_scores
 
 def metric_AUROC(target, output, nb_classes=14):
     outAUROC = []
