@@ -208,12 +208,14 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           mAUC, auc_scores = meanAUC(y_test, p_test)
           mMCC, mcc_scores = meanMCC(y_test, p_test)
           mAP, ap_scores = meanAP(y_test, p_test)
-          mF1, f1_scores = meanF1(y_test, p_test)
+          mF1, f1_scores, optimal_thresholds, recall_scores = meanF1(y_test, p_test)
             
           print(">> Mean AUC = {:.4f} \nAUC = {}".format(mAUC, np.array2string(np.array(auc_scores), precision=4, separator=',')))
           print(">> Mean MCC = {:.4f} \nMCC = {}".format(mMCC, np.array2string(np.array(mcc_scores), precision=4, separator=',')))
           print(">> Mean AP = {:.4f} \nAP = {}".format(mAP, np.array2string(np.array(ap_scores), precision=4, separator=',')))
           print(">> Mean F1 = {:.4f} \nF1 = {}".format(mF1, np.array2string(np.array(f1_scores), precision=4, separator=',')))
+          print(">> Optimal Thresholds = {}".format(np.array2string(np.array(optimal_thresholds), precision=4, separator=',')))
+          print(">> Recall = {}".format(np.array2string(np.array(recall_scores), precision=4, separator=',')))
           mean_result_list.append(mAUC)
           result_list.append([mAUC,mMCC,mAP,mF1])
         
@@ -303,16 +305,24 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         mAUC, auc_scores = meanAUC(y_test, p_test)
         mMCC, mcc_scores = meanMCC(y_test, p_test)
         mAP, ap_scores = meanAP(y_test, p_test)
-        mF1, f1_scores = meanF1(y_test, p_test)
+        mF1, f1_scores, optimal_thresholds, recall_scores = meanF1(y_test, p_test)
           
         print(">> Mean AUC = {:.4f} \nAUC = {}".format(mAUC, np.array2string(np.array(auc_scores), precision=4, separator=',')))
         print(">> Mean MCC = {:.4f} \nMCC = {}".format(mMCC, np.array2string(np.array(mcc_scores), precision=4, separator=',')))
         print(">> Mean AP = {:.4f} \nAP = {}".format(mAP, np.array2string(np.array(ap_scores), precision=4, separator=',')))
         print(">> Mean F1 = {:.4f} \nF1 = {}".format(mF1, np.array2string(np.array(f1_scores), precision=4, separator=',')))
-        writer.write("AUC = {}\n MCC = {}\nAP = {}\nF1 = {}\n".format(np.array2string(np.array(auc_scores), precision=4, separator=','), 
-                                                                    np.array2string(np.array(mcc_scores), precision=4, separator=','), 
-                                                                    np.array2string(np.array(f1_scores), precision=4, separator=','),
-                                                                    np.array2string(np.array(auc_scores), precision=4, separator=',')))
+        print(">> Optimal Thresholds = {}".format(np.array2string(np.array(optimal_thresholds), precision=4, separator=',')))
+        print(">> Recall = {}".format(np.array2string(np.array(recall_scores), precision=4, separator=',')))
+        writer.write(
+          "AUC = {}\nMCC = {}\nAP = {}\nF1 = {}\nOptimal Thresholds = {}\nRecall = {}\n".format(
+            np.array2string(np.array(auc_scores), precision=4, separator=','),
+            np.array2string(np.array(mcc_scores), precision=4, separator=','),
+            np.array2string(np.array(ap_scores), precision=4, separator=','),
+            np.array2string(np.array(f1_scores), precision=4, separator=','),
+            np.array2string(np.array(optimal_thresholds), precision=4, separator=','),
+            np.array2string(np.array(recall_scores), precision=4, separator=',')
+          )
+        )
         writer.write("{}: mAUC = {:.4f}, mMCC = {:.4f}, mAP = {:.4f}, mF1 = {:.4f}\n".format(experiment, mAUC, mMCC, mAP, mF1))
         
         
