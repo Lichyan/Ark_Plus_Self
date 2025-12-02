@@ -7,6 +7,7 @@ import numpy as np
 from optparse import OptionParser
 from tqdm import tqdm
 import copy
+import json
 import csv
 import pandas as pd
 
@@ -34,6 +35,25 @@ def safe_collate(batch):
     return default_collate(batch)
 
 
+def _collect_outputs(model, data_loader, device, args):
+    """无梯度地收集 logits->sigmoid 概率与标签"""
+    model.eval()
+    y_all = torch.FloatTensor().to(device)
+    p_all = torch.FloatTensor().to(device)
+    with torch.no_grad():
+        for batch in tqdm(data_loader):
+            if batch is None:
+                continue
+            samples, targets = batch
+            samples = samples.float().to(device)
+            targets = targets.float().to(device)
+            y_all = torch.cat((y_all, targets), 0)
+            out = model(samples)
+            out = torch.sigmoid(out)
+            p_all = torch.cat((p_all, out), 0)
+    return y_all.cpu().numpy(), p_all.cpu().numpy()
+
+
 class FocalLoss(torch.nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
         super().__init__()
@@ -51,6 +71,32 @@ class FocalLoss(torch.nn.Module):
             return loss.sum()
         return loss
 
+
+class WeightedOrdinalCrossEntropy(torch.nn.Module):
+    """基于 BCEWithLogitsLoss 的 ordinal 三通道损失"""
+
+    def __init__(self, pos_weight=None):
+        super().__init__()
+        self.loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    def forward(self, inputs, targets):
+        return self.loss(inputs, targets)
+
+
+def _parse_pos_weight(args, dataset_train, device):
+    if args.pos_weight:
+        parts = [float(x) for x in args.pos_weight.split(',')]
+        return torch.tensor(parts, dtype=torch.float32, device=device)
+    # 自动统计
+    pos = np.zeros(args.num_class, dtype=np.float32)
+    N = len(dataset_train)
+    for lab in dataset_train.img_label:
+        pos += np.array(lab, dtype=np.float32)
+    neg = np.maximum(N - pos, 1.0)
+    pos_safe = np.maximum(pos, 1.0)
+    pw = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
+    return pw
+
 def classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test, test_diseases=None):
   device = torch.device(args.device)
   cudnn.benchmark = True
@@ -65,7 +111,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   data_loader_test = DataLoader(dataset=dataset_test, batch_size=int(args.batch_size/2), shuffle=False,
-                            num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)  
+                            num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
+  ordinal_thresholds = None
   # training phase
   if args.mode == "train":
     if args.train_weights is not None:
@@ -94,7 +141,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       best_val_loss = init_loss
       patience_counter = 0
       save_model_path = os.path.join(model_path, experiment)
-      if args.loss_fn.lower() == 'focal':
+      if args.data_set == "advCheX_hyp_multi_level":
+        pos_weight = _parse_pos_weight(args, dataset_train, device)
+        criterion = WeightedOrdinalCrossEntropy(pos_weight=pos_weight)
+        print(f"use WeightedOrdinalCrossEntropy, pos_weight={pos_weight}", flush=True)
+      elif args.loss_fn.lower() == 'focal':
         criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
         print("use FocalLoss...", flush=True)
       else:
@@ -224,14 +275,22 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             "Epoch {:04d}: val_loss improved from {:.5f} to {:.5f}, saving model to {}".format(epoch, best_val_loss, val_loss,
                                                                                               save_model_path))
           best_val_loss = val_loss
-          patience_counter = 0  
-          save_checkpoint({
+          patience_counter = 0
+          ckpt_payload = {
             'epoch': epoch + 1,
             'lossMIN': best_val_loss,
             'state_dict': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': lr_scheduler.state_dict(),
-          },  filename="{}".format(save_model_path, epoch))
+          }
+          if args.data_set == "advCheX_hyp_multi_level":
+            y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
+            ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
+            ckpt_payload['ordinal_thresholds'] = ordinal_thresholds
+            json_path = save_model_path + "_thresholds.json"
+            save_thresholds_json(json_path, ordinal_thresholds)
+            print(f"[Ordinal] thresholds saved to {json_path}", flush=True)
+          save_checkpoint(ckpt_payload,  filename="{}".format(save_model_path, epoch))
 
         else:
           print("Epoch {:04d}: val_loss did not improve from {:.5f} ".format(epoch, best_val_loss))
@@ -282,7 +341,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         saved_model = os.path.join(model_path, experiment + ".pth.tar")
         pred_csv = os.path.join(model_path, experiment + ".csv")
         gt_csv = os.path.join(model_path, "gt.csv")
-        if os.path.exists(pred_csv) and os.path.exists(gt_csv):
+        use_cached = os.path.exists(pred_csv) and os.path.exists(gt_csv) and args.data_set != "advCheX_hyp_multi_level"
+        if use_cached:
           y_test = read_from_csv(gt_csv)
           p_test = read_from_csv(pred_csv)
         else:
@@ -298,15 +358,35 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           accuracy.append(acc)
 
         
+        if args.data_set == "advCheX_hyp_multi_level":
+          thresholds_src = None
+          if args.thresholds_json:
+            thresholds_src = load_thresholds_json(args.thresholds_json)
+          elif isinstance(saved_model, str):
+            ckpt_loaded = torch.load(saved_model, weights_only=True)
+            thresholds_src = ckpt_loaded.get('ordinal_thresholds')
+          thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
+          y_np = y_test if isinstance(y_test, np.ndarray) else y_test
+          p_np = p_test if isinstance(p_test, np.ndarray) else p_test
+          metrics, grades_true, grade_pred = evaluate_ordinal_tasks(y_np, p_np, thresholds_use)
+          writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+          result_rows = [["true_grade", "pred_grade", "p_ge1", "p_ge2", "p_ge3"]]
+          for g_t, g_p, (p1, p2, p3) in zip(grades_true, grade_pred, p_np.tolist()):
+            result_rows.append([g_t, g_p, p1, p2, p3])
+          with open(pred_csv, mode='w', newline='') as file:
+            csvwriter = csv.writer(file)
+            csvwriter.writerows(result_rows)
+          continue
+
         if test_diseases is not None:
           y_test = copy.deepcopy(y_test[:,test_diseases])
           p_test = copy.deepcopy(p_test[:,test_diseases])
-        
+
         mAUC, auc_scores = meanAUC(y_test, p_test)
         mMCC, mcc_scores = meanMCC(y_test, p_test)
         mAP, ap_scores = meanAP(y_test, p_test)
         mF1, f1_scores, optimal_thresholds, recall_scores = meanF1(y_test, p_test)
-          
+
         print(">> Mean AUC = {:.4f} \nAUC = {}".format(mAUC, np.array2string(np.array(auc_scores), precision=4, separator=',')))
         print(">> Mean MCC = {:.4f} \nMCC = {}".format(mMCC, np.array2string(np.array(mcc_scores), precision=4, separator=',')))
         print(">> Mean AP = {:.4f} \nAP = {}".format(mAP, np.array2string(np.array(ap_scores), precision=4, separator=',')))
@@ -324,9 +404,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           )
         )
         writer.write("{}: mAUC = {:.4f}, mMCC = {:.4f}, mAP = {:.4f}, mF1 = {:.4f}\n".format(experiment, mAUC, mMCC, mAP, mF1))
-        
-        
-        
+
+
+
         data = [diseases] if test_diseases is None else [[diseases[d] for d in test_diseases]]
         data = data + p_test.tolist()
         print(len(data[0]),len(data[1]))
