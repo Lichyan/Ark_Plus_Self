@@ -74,8 +74,14 @@ def test_classification(checkpoint, data_loader_test, device, args):
   print('[DEBUG] ...heyheyhey:test_clasification', flush=True)
   model = build_classification_model(args)
 
-  modelCheckpoint = torch.load(checkpoint, weights_only=True)
-  state_dict = modelCheckpoint['state_dict']
+  try:
+    modelCheckpoint = torch.load(checkpoint, weights_only=True)
+  except Exception:
+    modelCheckpoint = torch.load(checkpoint, weights_only=False)
+  if isinstance(modelCheckpoint, dict) and 'state_dict' in modelCheckpoint:
+    state_dict = modelCheckpoint['state_dict']
+  else:
+    state_dict = modelCheckpoint
   for k in list(state_dict.keys()):
     if k.startswith('module.'):
       state_dict[k[len("module."):]] = state_dict[k]
