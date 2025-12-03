@@ -97,6 +97,37 @@ def _parse_pos_weight(args, dataset_train, device):
     pw = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
     return pw
 
+
+def _load_ordinal_thresholds(saved_model, args):
+    if args.thresholds_json and os.path.exists(args.thresholds_json):
+        return load_thresholds_json(args.thresholds_json)
+
+    meta_path = saved_model.replace('.pth.tar', '_meta.json') if isinstance(saved_model, str) else None
+    if meta_path and os.path.exists(meta_path):
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            th_json = meta.get('thresholds_json')
+            if th_json:
+                candidate = th_json if os.path.isabs(th_json) else os.path.join(os.path.dirname(meta_path), th_json)
+                if os.path.exists(candidate):
+                    return load_thresholds_json(candidate)
+        except Exception:
+            pass
+
+    default_json = saved_model.replace('.pth.tar', '_thresholds.json') if isinstance(saved_model, str) else None
+    if default_json and os.path.exists(default_json):
+        return load_thresholds_json(default_json)
+
+    if isinstance(saved_model, str) and os.path.exists(saved_model):
+        try:
+            ckpt_loaded = torch.load(saved_model, weights_only=False)
+            if isinstance(ckpt_loaded, dict):
+                return ckpt_loaded.get('ordinal_thresholds')
+        except Exception:
+            pass
+    return None
+
 def classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test, test_diseases=None):
   device = torch.device(args.device)
   cudnn.benchmark = True
@@ -280,16 +311,24 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             'epoch': epoch + 1,
             'lossMIN': best_val_loss,
             'state_dict': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'scheduler': lr_scheduler.state_dict(),
           }
           if args.data_set == "advCheX_hyp_multi_level":
             y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
             ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
-            ckpt_payload['ordinal_thresholds'] = ordinal_thresholds
             json_path = save_model_path + "_thresholds.json"
             save_thresholds_json(json_path, ordinal_thresholds)
+            meta_path = save_model_path + "_meta.json"
+            with open(meta_path, "w") as f:
+              json.dump({
+                "epoch": epoch + 1,
+                "lossMIN": float(best_val_loss),
+                "thresholds_json": os.path.basename(json_path)
+              }, f, indent=2)
             print(f"[Ordinal] thresholds saved to {json_path}", flush=True)
+            print(f"[Ordinal] meta saved to {meta_path}", flush=True)
+          else:
+            ckpt_payload['optimizer'] = optimizer.state_dict()
+            ckpt_payload['scheduler'] = lr_scheduler.state_dict()
           save_checkpoint(ckpt_payload,  filename="{}".format(save_model_path, epoch))
 
         else:
@@ -359,12 +398,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
 
         
         if args.data_set == "advCheX_hyp_multi_level":
-          thresholds_src = None
-          if args.thresholds_json:
-            thresholds_src = load_thresholds_json(args.thresholds_json)
-          elif isinstance(saved_model, str):
-            ckpt_loaded = torch.load(saved_model, weights_only=True)
-            thresholds_src = ckpt_loaded.get('ordinal_thresholds')
+          thresholds_src = _load_ordinal_thresholds(saved_model, args)
           thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
           y_np = y_test if isinstance(y_test, np.ndarray) else y_test
           p_np = p_test if isinstance(p_test, np.ndarray) else p_test
