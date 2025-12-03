@@ -230,6 +230,11 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
 
 
 def save_thresholds_json(path, thresholds):
+    # 将 numpy 标量转换为 Python float，避免 json 序列化报错
+    def _to_float_dict(d):
+        return {k: float(v) if v is not None else None for k, v in d.items()}
+    if isinstance(thresholds, dict):
+        thresholds = {k: _to_float_dict(v) if isinstance(v, dict) else v for k, v in thresholds.items()}
     with open(path, "w") as f:
         json.dump(thresholds, f, indent=2)
 
