@@ -32,6 +32,10 @@ def safe_collate(batch):
     batch = [b for b in batch if b is not None and b[0] is not None and b[1] is not None]
     if len(batch) == 0:
         return None
+    # 支持 (img, label, path) 结构，路径保持为 list
+    if len(batch[0]) == 3:
+        imgs, labels, paths = zip(*batch)
+        return default_collate(imgs), default_collate(labels), list(paths)
     return default_collate(batch)
 
 
@@ -140,6 +144,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   if not os.path.exists(output_path):
     os.makedirs(output_path)
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
+
+  if args.data_set == "advCheX_hyp_multi_level" and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
+    if hasattr(dataset_test, "return_path"):
+      dataset_test.return_path = True
 
   data_loader_test = DataLoader(dataset=dataset_test, batch_size=int(args.batch_size/2), shuffle=False,
                             num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
@@ -380,12 +388,18 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         saved_model = os.path.join(model_path, experiment + ".pth.tar")
         pred_csv = os.path.join(model_path, experiment + ".csv")
         gt_csv = os.path.join(model_path, "gt.csv")
+        path_list = None
         use_cached = os.path.exists(pred_csv) and os.path.exists(gt_csv) and args.data_set != "advCheX_hyp_multi_level"
         if use_cached:
           y_test = read_from_csv(gt_csv)
           p_test = read_from_csv(pred_csv)
         else:
-          y_test, p_test = test_classification(saved_model, data_loader_test, device, args)
+          test_out = test_classification(saved_model, data_loader_test, device, args)
+          if isinstance(test_out, tuple) and len(test_out) == 3:
+            y_test, p_test, path_list = test_out
+          else:
+            y_test, p_test = test_out
+            path_list = None
           y_test = y_test.cpu().numpy()
           p_test = p_test.cpu().numpy()
 
@@ -402,14 +416,51 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
           y_np = y_test if isinstance(y_test, np.ndarray) else y_test
           p_np = p_test if isinstance(p_test, np.ndarray) else p_test
+          if getattr(args, "test_time_adjust", False):
+            thresholds_use = compute_ordinal_thresholds(y_np, p_np).get("youden", thresholds_use)
+
           metrics, grades_true, grade_pred = evaluate_ordinal_tasks(y_np, p_np, thresholds_use)
           writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+
+          task_views = build_ordinal_task_views(y_np, p_np)
+          # 任务阈值：测试时调整则在测试集上用 Youden 搜索；否则沿用 ge1/2/3 或 0.5 默认
+          if getattr(args, "test_time_adjust", False):
+            task_thresholds = compute_task_thresholds(task_views, metric="youden")
+          else:
+            ge_defaults = thresholds_use or {"ge1": 0.5, "ge2": 0.5, "ge3": 0.5}
+            task_thresholds = {
+              "hasHTN": ge_defaults.get("ge1", 0.5),
+              "severe": ge_defaults.get("ge2", 0.5),
+              "very_severe": ge_defaults.get("ge3", 0.5),
+              "hypertension_vs_non": ge_defaults.get("ge1", 0.5),
+            }
+            if "lv1_vs_non" in task_views:
+              task_thresholds.setdefault("lv1_vs_non", 0.5)
+            if "lv2_vs_non" in task_views:
+              task_thresholds.setdefault("lv2_vs_non", 0.5)
+            if "lv3_vs_non" in task_views:
+              task_thresholds.setdefault("lv3_vs_non", 0.5)
+
+          threshold_metrics = evaluate_tasks_with_thresholds(task_views, task_thresholds)
+          writer.write(json.dumps({"threshold_metrics": threshold_metrics}, ensure_ascii=False) + "\n")
+
           result_rows = [["true_grade", "pred_grade", "p_ge1", "p_ge2", "p_ge3"]]
           for g_t, g_p, (p1, p2, p3) in zip(grades_true, grade_pred, p_np.tolist()):
             result_rows.append([g_t, g_p, p1, p2, p3])
           with open(pred_csv, mode='w', newline='') as file:
             csvwriter = csv.writer(file)
             csvwriter.writerows(result_rows)
+
+          if getattr(args, "output_special", False):
+            examples = collect_confusion_examples(task_views, task_thresholds, path_list)
+            rows = examples.get("rows", []) if isinstance(examples, dict) else []
+            if rows:
+              special_csv = os.path.join(model_path, experiment + "_special.csv")
+              with open(special_csv, mode='w', newline='') as f:
+                writer_csv = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer_csv.writeheader()
+                writer_csv.writerows(rows)
+          experiment = reader.readline()
           continue
 
         if test_diseases is not None:

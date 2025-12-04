@@ -137,6 +137,10 @@ def get_args_parser():
     parser.add_option("--focal_gamma", dest="focal_gamma", help="gamma for focal loss", default=2.0, type="float")
     parser.add_option("--pos_weight", dest="pos_weight", help="comma separated pos_weight for ordinal tasks (len=3)", default=None, type="string")
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
+    parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option('--few_shot', dest="few_shot", help='number or percentage of training samples', default=-1, type=float)
 
 

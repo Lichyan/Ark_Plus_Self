@@ -156,6 +156,10 @@ def decode_ordinal_probs(p_ge, thresholds=None):
 
 
 def compute_threshold_by_metric(y_true, scores, metric="youden"):
+    y_true = np.asarray(y_true)
+    scores = np.asarray(scores)
+    if len(np.unique(y_true)) < 2:
+        return 0.5
     fpr, tpr, thresholds = roc_curve(y_true, scores)
     if metric == "youden":
         youden_j = tpr - fpr
@@ -180,6 +184,106 @@ def compute_ordinal_thresholds(y_ord, p_ge):
         thresholds["youden"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="youden")
         thresholds["f1"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="f1")
     return thresholds
+
+
+def build_ordinal_task_views(y_ord, p_ge):
+    """返回各二分类任务的标签、分数和索引掩码"""
+    y_ord = np.asarray(y_ord)
+    p_ge = np.asarray(p_ge)
+    grades = np.array([ordinal_targets_to_grade(row) for row in y_ord])
+
+    p_lv1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+    p_lv2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
+    p_lv3 = np.clip(p_ge[:, 2], 0, 1)
+
+    task_views = {
+        "hasHTN": (y_ord[:, 0], p_ge[:, 0], np.arange(len(y_ord))),
+        "severe": (y_ord[:, 1], p_ge[:, 1], np.arange(len(y_ord))),
+        "very_severe": (y_ord[:, 2], p_ge[:, 2], np.arange(len(y_ord))),
+        "hypertension_vs_non": (grades >= 1, p_ge[:, 0], np.arange(len(y_ord))),
+    }
+
+    mask_lv1 = np.isin(grades, [0, 1])
+    if mask_lv1.any() and (~mask_lv1).any():
+        task_views["lv1_vs_non"] = (grades[mask_lv1] == 1, p_lv1[mask_lv1], np.nonzero(mask_lv1)[0])
+    mask_lv2 = np.isin(grades, [0, 2])
+    if mask_lv2.any() and (~mask_lv2).any():
+        task_views["lv2_vs_non"] = (grades[mask_lv2] == 2, p_lv2[mask_lv2], np.nonzero(mask_lv2)[0])
+    mask_lv3 = np.isin(grades, [0, 3])
+    if mask_lv3.any() and (~mask_lv3).any():
+        task_views["lv3_vs_non"] = (grades[mask_lv3] == 3, p_lv3[mask_lv3], np.nonzero(mask_lv3)[0])
+
+    return task_views
+
+
+def compute_task_thresholds(task_views, metric="youden", default=0.5):
+    thresholds = {}
+    for name, (labels, scores, _) in task_views.items():
+        thresholds[name] = compute_threshold_by_metric(labels, scores, metric=metric) if len(np.unique(labels)) >= 2 else default
+    return thresholds
+
+
+def binary_metrics_at_threshold(labels, scores, threshold):
+    labels = np.asarray(labels).astype(int)
+    scores = np.asarray(scores)
+    preds = (scores >= threshold).astype(int)
+    tp = int(((preds == 1) & (labels == 1)).sum())
+    fp = int(((preds == 1) & (labels == 0)).sum())
+    tn = int(((preds == 0) & (labels == 0)).sum())
+    fn = int(((preds == 0) & (labels == 1)).sum())
+    denom_rec = tp + fn
+    denom_spec = tn + fp
+    recall = tp / denom_rec if denom_rec > 0 else None
+    spec = tn / denom_spec if denom_spec > 0 else None
+    f1 = f1_score(labels, preds, zero_division=0)
+    return {
+        "threshold": float(threshold),
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "recall": recall,
+        "spec": spec,
+        "f1": f1,
+    }
+
+
+def evaluate_tasks_with_thresholds(task_views, task_thresholds):
+    metrics = {}
+    for name, (labels, scores, _) in task_views.items():
+        thr = task_thresholds.get(name, 0.5)
+        metrics[name] = binary_metrics_at_threshold(labels, scores, thr)
+    return metrics
+
+
+def collect_confusion_examples(task_views, task_thresholds, paths):
+    if paths is None:
+        return {}
+    examples = {}
+    for name, (labels, scores, idxs) in task_views.items():
+        thr = task_thresholds.get(name, 0.5)
+        labels = np.asarray(labels).astype(int)
+        scores = np.asarray(scores)
+        preds = (scores >= thr).astype(int)
+        candidates = {
+            "TP": np.where((preds == 1) & (labels == 1))[0],
+            "FP": np.where((preds == 1) & (labels == 0))[0],
+            "TN": np.where((preds == 0) & (labels == 0))[0],
+            "FN": np.where((preds == 0) & (labels == 1))[0],
+        }
+        row = {"task": name, "threshold": float(thr)}
+        for tag, arr in candidates.items():
+            if len(arr) > 0:
+                global_idx = idxs[arr[0]]
+                row[f"{tag}_path"] = paths[global_idx]
+                row[f"{tag}_pred"] = int(preds[arr[0]])
+                row[f"{tag}_gt"] = int(labels[arr[0]])
+            else:
+                row[f"{tag}_path"] = None
+                row[f"{tag}_pred"] = None
+                row[f"{tag}_gt"] = None
+        examples.setdefault("rows", []).append(row)
+    return examples
 
 
 def ordinal_binary_task_auc(labels, scores):

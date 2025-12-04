@@ -99,13 +99,18 @@ def test_classification(checkpoint, data_loader_test, device, args):
   
   y_test = torch.FloatTensor().cuda()
   p_test = torch.FloatTensor().cuda()
+  path_list = []
   printed = False
 
   with torch.no_grad():
     for i, batch in enumerate(tqdm(data_loader_test)):
       if batch is None:
         continue
-      samples, targets = batch
+      if len(batch) == 3:
+        samples, targets, paths = batch
+      else:
+        samples, targets = batch
+        paths = None
       targets = targets.cuda()
       y_test = torch.cat((y_test, targets), 0)
 
@@ -134,7 +139,11 @@ def test_classification(checkpoint, data_loader_test, device, args):
         out = torch.sigmoid(out)
       outMean = out.view(bs, n_crops, -1).mean(1)
       p_test = torch.cat((p_test, outMean.data), 0)
+      if paths is not None:
+        path_list.extend(list(paths))
 
+  if path_list:
+    return y_test, p_test, path_list
   return y_test, p_test
 
 def test_model(model, data_loader_test, args):
