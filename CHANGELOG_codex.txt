@@ -1,0 +1,3 @@
+[2025-12-03] -codex
+Reason: 高血压分级测试阶段重复跑同一模型且需支持测试期阈值调整与样本示例导出。
+Changes: 修复 advCheX_hyp_multi_level 测试循环读取 models.log 后未推进游标导致的重复测试；新增测试参数 test_time_adjust/output_special 及相关阈值搜索、混淆示例导出逻辑；扩展数据集与推理支持返回样本路径以便保存示例；保持现有分辨率/增广流程不变。
