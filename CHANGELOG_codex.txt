@@ -1,0 +1,11 @@
+[2025-12-03] -codex
+Reason: 高血压分级测试阶段重复跑同一模型且需支持测试期阈值调整与样本示例导出。
+Changes: 修复 advCheX_hyp_multi_level 测试循环读取 models.log 后未推进游标导致的重复测试；新增测试参数 test_time_adjust/output_special 及相关阈值搜索、混淆示例导出逻辑；扩展数据集与推理支持返回样本路径以便保存示例；保持现有分辨率/增广流程不变。
+
+[2025-12-04] -codex
+Reason: 高血压分级测试在仅跑一次模型时仍触发通用多试次指标汇总，空结果导致统计报错。
+Changes: 在 advCheX_hyp_multi_level 测试分支后跳过通用 mAUC/mAP 等汇总，避免空列表计算；不影响其他数据集的试次汇总逻辑。
+
+[2025-12-05] -codex
+Reason: 高血压分级任务测试阈值与验证日志需优化，lv1/2/3 子任务阈值固定为 0.5 导致极端指标，验证阶段缺少 AUC 监控。
+Changes: 让 lv1_vs_non、lv2_vs_non、lv3_vs_non 在测试时始终用当前集 Youden 阈值计算混淆指标，其他任务沿用原有 test_time_adjust 逻辑；验证阶段在不影响 early stopping 的前提下记录 val AUC_hypertension_vs_non 以观测对齐情况，并复用同一份验证输出生成阈值文件。
