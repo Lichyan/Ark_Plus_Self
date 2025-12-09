@@ -276,6 +276,16 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
 
         val_loss = evaluate(data_loader_val, device,model, criterion)
 
+        y_val_np, p_val_np, val_auc_hyp = None, None, None
+        if args.data_set == "advCheX_hyp_multi_level":
+          y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
+          val_metrics, _, _ = evaluate_ordinal_tasks(y_val_np, p_val_np)
+          val_auc_hyp = val_metrics.get("AUROC_hypertension_vs_non")
+          if val_auc_hyp is not None:
+            print(f"Epoch {epoch:04d}: val_auc_hypertension={val_auc_hyp:.4f}", flush=True)
+          else:
+            print(f"Epoch {epoch:04d}: val_auc_hypertension=N/A (single class)", flush=True)
+
         lr_scheduler.step(val_loss)
 
         if args.test_every_epoch:
@@ -321,7 +331,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             'state_dict': model.state_dict(),
           }
           if args.data_set == "advCheX_hyp_multi_level":
-            y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
+            if y_val_np is None or p_val_np is None:
+              y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
             ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
             json_path = save_model_path + "_thresholds.json"
             save_thresholds_json(json_path, ordinal_thresholds)
@@ -434,12 +445,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               "very_severe": ge_defaults.get("ge3", 0.5),
               "hypertension_vs_non": ge_defaults.get("ge1", 0.5),
             }
-            if "lv1_vs_non" in task_views:
-              task_thresholds.setdefault("lv1_vs_non", 0.5)
-            if "lv2_vs_non" in task_views:
-              task_thresholds.setdefault("lv2_vs_non", 0.5)
-            if "lv3_vs_non" in task_views:
-              task_thresholds.setdefault("lv3_vs_non", 0.5)
+            # lv1/lv2/lv3 始终在当前集上用 Youden 搜索阈值
+            for name in ["lv1_vs_non", "lv2_vs_non", "lv3_vs_non"]:
+              if name in task_views:
+                labels, scores, _ = task_views[name]
+                task_thresholds[name] = compute_threshold_by_metric(labels, scores, metric="youden")
 
           threshold_metrics = evaluate_tasks_with_thresholds(task_views, task_thresholds)
           writer.write(json.dumps({"threshold_metrics": threshold_metrics}, ensure_ascii=False) + "\n")
