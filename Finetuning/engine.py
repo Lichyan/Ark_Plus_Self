@@ -145,7 +145,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
     os.makedirs(output_path)
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
-  if args.data_set == "advCheX_hyp_multi_level" and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
+  ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1"}
+  if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
 
@@ -154,9 +155,15 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   ordinal_thresholds = None
   # training phase
   if args.mode == "train":
-    if args.train_weights is not None:
-      df_w = pd.read_csv(args.train_weights)
-      weight_map = dict(zip(df_w['Path'], df_w['sample_weight']))
+    train_weights_path = args.train_weights
+    if args.data_set == "advCheX_hyp_multi_stage_v1" and train_weights_path is None:
+      candidate = os.path.join(args.data_dir, "train_weights.csv")
+      if os.path.exists(candidate):
+        train_weights_path = candidate
+    if train_weights_path is not None:
+      df_w = pd.read_csv(train_weights_path)
+      weight_col = "sample_weight" if "sample_weight" in df_w.columns else "weight"
+      weight_map = dict(zip(df_w['Path'], df_w[weight_col]))
       rel_paths = [os.path.relpath(p, args.data_dir) for p in dataset_train.img_list]
       weights = [weight_map.get(rp, 1.0) for rp in rel_paths]
       sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
@@ -180,7 +187,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       best_val_loss = init_loss
       patience_counter = 0
       save_model_path = os.path.join(model_path, experiment)
-      if args.data_set == "advCheX_hyp_multi_level":
+      if args.data_set in ordinal_datasets:
         pos_weight = _parse_pos_weight(args, dataset_train, device)
         criterion = WeightedOrdinalCrossEntropy(pos_weight=pos_weight)
         print(f"use WeightedOrdinalCrossEntropy, pos_weight={pos_weight}", flush=True)
@@ -330,7 +337,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             'lossMIN': best_val_loss,
             'state_dict': model.state_dict(),
           }
-          if args.data_set == "advCheX_hyp_multi_level":
+          if args.data_set in ordinal_datasets:
             if y_val_np is None or p_val_np is None:
               y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
             ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
@@ -422,11 +429,12 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           accuracy.append(acc)
 
         
-        if args.data_set == "advCheX_hyp_multi_level":
+        if args.data_set in ordinal_datasets:
           thresholds_src = _load_ordinal_thresholds(saved_model, args)
           thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
           y_np = y_test if isinstance(y_test, np.ndarray) else y_test
           p_np = p_test if isinstance(p_test, np.ndarray) else p_test
+          k = p_np.shape[1]
           if getattr(args, "test_time_adjust", False):
             thresholds_use = compute_ordinal_thresholds(y_np, p_np).get("youden", thresholds_use)
 
@@ -438,25 +446,28 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           if getattr(args, "test_time_adjust", False):
             task_thresholds = compute_task_thresholds(task_views, metric="youden")
           else:
-            ge_defaults = thresholds_use or {"ge1": 0.5, "ge2": 0.5, "ge3": 0.5}
-            task_thresholds = {
-              "hasHTN": ge_defaults.get("ge1", 0.5),
-              "severe": ge_defaults.get("ge2", 0.5),
-              "very_severe": ge_defaults.get("ge3", 0.5),
-              "hypertension_vs_non": ge_defaults.get("ge1", 0.5),
-            }
-            # lv1/lv2/lv3 始终在当前集上用 Youden 搜索阈值
-            for name in ["lv1_vs_non", "lv2_vs_non", "lv3_vs_non"]:
-              if name in task_views:
+            ge_defaults = thresholds_use or {f"ge{i}": 0.5 for i in range(1, k + 1)}
+            task_thresholds = {}
+            for name in task_views.keys():
+              if name in ["hasHTN", "hypertension_vs_non", "ge1"]:
+                task_thresholds[name] = ge_defaults.get("ge1", 0.5)
+              elif name in ["severe", "ge2"]:
+                task_thresholds[name] = ge_defaults.get("ge2", 0.5)
+              elif name in ["very_severe", "ge3"]:
+                task_thresholds[name] = ge_defaults.get("ge3", 0.5)
+              elif name in ["lv1_vs_non", "lv2_vs_non", "lv3_vs_non", "stage1_vs_non", "stage2_vs_non"]:
                 labels, scores, _ = task_views[name]
                 task_thresholds[name] = compute_threshold_by_metric(labels, scores, metric="youden")
+              else:
+                task_thresholds[name] = 0.5
 
           threshold_metrics = evaluate_tasks_with_thresholds(task_views, task_thresholds)
           writer.write(json.dumps({"threshold_metrics": threshold_metrics}, ensure_ascii=False) + "\n")
 
-          result_rows = [["true_grade", "pred_grade", "p_ge1", "p_ge2", "p_ge3"]]
-          for g_t, g_p, (p1, p2, p3) in zip(grades_true, grade_pred, p_np.tolist()):
-            result_rows.append([g_t, g_p, p1, p2, p3])
+          header = ["true_grade", "pred_grade"] + [f"p_ge{i}" for i in range(1, k + 1)]
+          result_rows = [header]
+          for g_t, g_p, p_vals in zip(grades_true, grade_pred, p_np.tolist()):
+            result_rows.append([g_t, g_p] + p_vals)
           with open(pred_csv, mode='w', newline='') as file:
             csvwriter = csv.writer(file)
             csvwriter.writerows(result_rows)

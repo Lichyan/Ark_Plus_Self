@@ -9,3 +9,7 @@ Changes: 在 advCheX_hyp_multi_level 测试分支后跳过通用 mAUC/mAP 等汇
 [2025-12-05] -codex
 Reason: 高血压分级任务测试阈值与验证日志需优化，lv1/2/3 子任务阈值固定为 0.5 导致极端指标，验证阶段缺少 AUC 监控。
 Changes: 让 lv1_vs_non、lv2_vs_non、lv3_vs_non 在测试时始终用当前集 Youden 阈值计算混淆指标，其他任务沿用原有 test_time_adjust 逻辑；验证阶段在不影响 early stopping 的前提下记录 val AUC_hypertension_vs_non 以观测对齐情况，并复用同一份验证输出生成阈值文件。
+
+[2025-12-06] -codex
+Reason: 新增高血压三阶段 ordinal 任务并支持 K=2 阈值流程及样本权重采样。
+Changes: 增加 advCheX_hyp_multi_stage_v1 数据集与两阈值 ordinal 标签编码，训练侧支持基于 train_weights.csv 的 WeightedRandomSampler；ordinal 工具函数扩展为支持 K=2（AUROC_ge1/2、三分类 macro-F1 与两阈值解码），测试分支与阈值/输出文件生成支持动态阈值数。

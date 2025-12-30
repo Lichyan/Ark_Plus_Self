@@ -121,14 +121,20 @@ def meanF1(ground_truth, predictions):
     return mf1_score, f1_scores, optimal_thresholds, recall_scores
 
 
-def grade_to_ordinal_targets(grade: int):
-    """4 级 (0~3) -> 三个是否>=k 标签"""
-    return [1 if grade >= k else 0 for k in [1, 2, 3]]
+def grade_to_ordinal_targets(grade: int, k: int = 3):
+    """(0~k) -> k 个是否>=k 标签"""
+    return [1 if grade >= idx else 0 for idx in range(1, k + 1)]
 
 
 def ordinal_targets_to_grade(row):
-    """[>=1, >=2, >=3] -> 离散等级"""
+    """[>=1, >=2(, >=3)] -> 离散等级"""
     row = [int(v) for v in row]
+    if len(row) == 2:
+        if row == [0, 0]:
+            return 0
+        if row == [1, 0]:
+            return 1
+        return 2
     if row == [0, 0, 0]:
         return 0
     if row == [1, 0, 0]:
@@ -139,7 +145,22 @@ def ordinal_targets_to_grade(row):
 
 
 def decode_ordinal_probs(p_ge, thresholds=None):
-    """按照默认或传入阈值把概率解码成0~3等级"""
+    """按照默认或传入阈值把概率解码成等级"""
+    p_ge = np.asarray(p_ge)
+    k = p_ge.shape[1]
+    if k == 2:
+        thresholds = thresholds or {"ge1": 0.5, "ge2": 0.5}
+        ge1, ge2 = thresholds.get("ge1", 0.5), thresholds.get("ge2", 0.5)
+        preds = []
+        for p1, p2 in p_ge:
+            if p1 < ge1:
+                preds.append(0)
+            elif p2 < ge2:
+                preds.append(1)
+            else:
+                preds.append(2)
+        return preds
+
     thresholds = thresholds or {"ge1": 0.5, "ge2": 0.5, "ge3": 0.5}
     ge1, ge2, ge3 = thresholds.get("ge1", 0.5), thresholds.get("ge2", 0.5), thresholds.get("ge3", 0.5)
     preds = []
@@ -178,8 +199,10 @@ def compute_threshold_by_metric(y_true, scores, metric="youden"):
 def compute_ordinal_thresholds(y_ord, p_ge):
     y_ord = np.asarray(y_ord)
     p_ge = np.asarray(p_ge)
+    k = y_ord.shape[1]
     thresholds = {"youden": {}, "f1": {}}
-    for idx, key in enumerate(["ge1", "ge2", "ge3"]):
+    for idx in range(k):
+        key = f"ge{idx + 1}"
         y_true = y_ord[:, idx]
         thresholds["youden"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="youden")
         thresholds["f1"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="f1")
@@ -191,16 +214,33 @@ def build_ordinal_task_views(y_ord, p_ge):
     y_ord = np.asarray(y_ord)
     p_ge = np.asarray(p_ge)
     grades = np.array([ordinal_targets_to_grade(row) for row in y_ord])
+    k = p_ge.shape[1]
+    idxs = np.arange(len(y_ord))
+
+    if k == 2:
+        p_stage1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p_stage2 = np.clip(p_ge[:, 1], 0, 1)
+        task_views = {
+            "ge1": (y_ord[:, 0], p_ge[:, 0], idxs),
+            "ge2": (y_ord[:, 1], p_ge[:, 1], idxs),
+        }
+        mask_stage1 = np.isin(grades, [0, 1])
+        if mask_stage1.any() and (~mask_stage1).any():
+            task_views["stage1_vs_non"] = (grades[mask_stage1] == 1, p_stage1[mask_stage1], np.nonzero(mask_stage1)[0])
+        mask_stage2 = np.isin(grades, [0, 2])
+        if mask_stage2.any() and (~mask_stage2).any():
+            task_views["stage2_vs_non"] = (grades[mask_stage2] == 2, p_stage2[mask_stage2], np.nonzero(mask_stage2)[0])
+        return task_views
 
     p_lv1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
     p_lv2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
     p_lv3 = np.clip(p_ge[:, 2], 0, 1)
 
     task_views = {
-        "hasHTN": (y_ord[:, 0], p_ge[:, 0], np.arange(len(y_ord))),
-        "severe": (y_ord[:, 1], p_ge[:, 1], np.arange(len(y_ord))),
-        "very_severe": (y_ord[:, 2], p_ge[:, 2], np.arange(len(y_ord))),
-        "hypertension_vs_non": (grades >= 1, p_ge[:, 0], np.arange(len(y_ord))),
+        "hasHTN": (y_ord[:, 0], p_ge[:, 0], idxs),
+        "severe": (y_ord[:, 1], p_ge[:, 1], idxs),
+        "very_severe": (y_ord[:, 2], p_ge[:, 2], idxs),
+        "hypertension_vs_non": (grades >= 1, p_ge[:, 0], idxs),
     }
 
     mask_lv1 = np.isin(grades, [0, 1])
@@ -296,9 +336,21 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
     y_ord = np.asarray(y_ord)
     p_ge = np.asarray(p_ge)
     grades_true = [ordinal_targets_to_grade(row) for row in y_ord]
+    k = p_ge.shape[1]
+
+    metrics = {}
+    if k == 2:
+        metrics["AUROC_ge1"] = ordinal_binary_task_auc(y_ord[:, 0], p_ge[:, 0])
+        metrics["AUROC_ge2"] = ordinal_binary_task_auc(y_ord[:, 1], p_ge[:, 1])
+        p0 = 1 - p_ge[:, 0]
+        p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p2 = np.clip(p_ge[:, 1], 0, 1)
+        probs = np.stack([p0, p1, p2], axis=1)
+        grade_pred = probs.argmax(axis=1).tolist()
+        metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2], average="macro", zero_division=0)
+        return metrics, grades_true, grade_pred
 
     # 基础三条任务
-    metrics = {}
     metrics["AUROC_hasHTN"] = ordinal_binary_task_auc(y_ord[:, 0], p_ge[:, 0])
     metrics["AUROC_severe"] = ordinal_binary_task_auc(y_ord[:, 1], p_ge[:, 1])
     metrics["AUROC_very_severe"] = ordinal_binary_task_auc(y_ord[:, 2], p_ge[:, 2])
