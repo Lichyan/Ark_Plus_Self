@@ -1,6 +1,7 @@
 from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score
 import torch
 import numpy as np
+import json
 
 class MetricLogger(object):
     """Computes and stores the average and current value"""
@@ -118,6 +119,286 @@ def meanF1(ground_truth, predictions):
 
     mf1_score = np.mean(f1_scores)
     return mf1_score, f1_scores, optimal_thresholds, recall_scores
+
+
+def grade_to_ordinal_targets(grade: int, k: int = 3):
+    """(0~k) -> k 个是否>=k 标签"""
+    return [1 if grade >= idx else 0 for idx in range(1, k + 1)]
+
+
+def ordinal_targets_to_grade(row):
+    """[>=1, >=2(, >=3)] -> 离散等级"""
+    row = [int(v) for v in row]
+    if len(row) == 2:
+        if row == [0, 0]:
+            return 0
+        if row == [1, 0]:
+            return 1
+        return 2
+    if row == [0, 0, 0]:
+        return 0
+    if row == [1, 0, 0]:
+        return 1
+    if row == [1, 1, 0]:
+        return 2
+    return 3
+
+
+def decode_ordinal_probs(p_ge, thresholds=None):
+    """按照默认或传入阈值把概率解码成等级"""
+    p_ge = np.asarray(p_ge)
+    k = p_ge.shape[1]
+    if k == 2:
+        thresholds = thresholds or {"ge1": 0.5, "ge2": 0.5}
+        ge1, ge2 = thresholds.get("ge1", 0.5), thresholds.get("ge2", 0.5)
+        preds = []
+        for p1, p2 in p_ge:
+            if p1 < ge1:
+                preds.append(0)
+            elif p2 < ge2:
+                preds.append(1)
+            else:
+                preds.append(2)
+        return preds
+
+    thresholds = thresholds or {"ge1": 0.5, "ge2": 0.5, "ge3": 0.5}
+    ge1, ge2, ge3 = thresholds.get("ge1", 0.5), thresholds.get("ge2", 0.5), thresholds.get("ge3", 0.5)
+    preds = []
+    for p1, p2, p3 in p_ge:
+        if p1 < ge1:
+            preds.append(0)
+        elif p2 < ge2:
+            preds.append(1)
+        elif p3 < ge3:
+            preds.append(2)
+        else:
+            preds.append(3)
+    return preds
+
+
+def compute_threshold_by_metric(y_true, scores, metric="youden"):
+    y_true = np.asarray(y_true)
+    scores = np.asarray(scores)
+    if len(np.unique(y_true)) < 2:
+        return 0.5
+    fpr, tpr, thresholds = roc_curve(y_true, scores)
+    if metric == "youden":
+        youden_j = tpr - fpr
+        return thresholds[np.argmax(youden_j)]
+    elif metric == "f1":
+        best_f1, best_t = -1, 0.5
+        for thr in thresholds:
+            pred = (scores >= thr).astype(int)
+            f1 = f1_score(y_true, pred)
+            if f1 > best_f1:
+                best_f1, best_t = f1, thr
+        return best_t
+    return 0.5
+
+
+def compute_ordinal_thresholds(y_ord, p_ge):
+    y_ord = np.asarray(y_ord)
+    p_ge = np.asarray(p_ge)
+    k = y_ord.shape[1]
+    thresholds = {"youden": {}, "f1": {}}
+    for idx in range(k):
+        key = f"ge{idx + 1}"
+        y_true = y_ord[:, idx]
+        thresholds["youden"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="youden")
+        thresholds["f1"][key] = compute_threshold_by_metric(y_true, p_ge[:, idx], metric="f1")
+    return thresholds
+
+
+def build_ordinal_task_views(y_ord, p_ge):
+    """返回各二分类任务的标签、分数和索引掩码"""
+    y_ord = np.asarray(y_ord)
+    p_ge = np.asarray(p_ge)
+    grades = np.array([ordinal_targets_to_grade(row) for row in y_ord])
+    k = p_ge.shape[1]
+    idxs = np.arange(len(y_ord))
+
+    if k == 2:
+        p_stage1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p_stage2 = np.clip(p_ge[:, 1], 0, 1)
+        task_views = {
+            "ge1": (y_ord[:, 0], p_ge[:, 0], idxs),
+            "ge2": (y_ord[:, 1], p_ge[:, 1], idxs),
+        }
+        mask_stage1 = np.isin(grades, [0, 1])
+        if mask_stage1.any() and (~mask_stage1).any():
+            task_views["stage1_vs_non"] = (grades[mask_stage1] == 1, p_stage1[mask_stage1], np.nonzero(mask_stage1)[0])
+        mask_stage2 = np.isin(grades, [0, 2])
+        if mask_stage2.any() and (~mask_stage2).any():
+            task_views["stage2_vs_non"] = (grades[mask_stage2] == 2, p_stage2[mask_stage2], np.nonzero(mask_stage2)[0])
+        return task_views
+
+    p_lv1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+    p_lv2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
+    p_lv3 = np.clip(p_ge[:, 2], 0, 1)
+
+    task_views = {
+        "hasHTN": (y_ord[:, 0], p_ge[:, 0], idxs),
+        "severe": (y_ord[:, 1], p_ge[:, 1], idxs),
+        "very_severe": (y_ord[:, 2], p_ge[:, 2], idxs),
+        "hypertension_vs_non": (grades >= 1, p_ge[:, 0], idxs),
+    }
+
+    mask_lv1 = np.isin(grades, [0, 1])
+    if mask_lv1.any() and (~mask_lv1).any():
+        task_views["lv1_vs_non"] = (grades[mask_lv1] == 1, p_lv1[mask_lv1], np.nonzero(mask_lv1)[0])
+    mask_lv2 = np.isin(grades, [0, 2])
+    if mask_lv2.any() and (~mask_lv2).any():
+        task_views["lv2_vs_non"] = (grades[mask_lv2] == 2, p_lv2[mask_lv2], np.nonzero(mask_lv2)[0])
+    mask_lv3 = np.isin(grades, [0, 3])
+    if mask_lv3.any() and (~mask_lv3).any():
+        task_views["lv3_vs_non"] = (grades[mask_lv3] == 3, p_lv3[mask_lv3], np.nonzero(mask_lv3)[0])
+
+    return task_views
+
+
+def compute_task_thresholds(task_views, metric="youden", default=0.5):
+    thresholds = {}
+    for name, (labels, scores, _) in task_views.items():
+        thresholds[name] = compute_threshold_by_metric(labels, scores, metric=metric) if len(np.unique(labels)) >= 2 else default
+    return thresholds
+
+
+def binary_metrics_at_threshold(labels, scores, threshold):
+    labels = np.asarray(labels).astype(int)
+    scores = np.asarray(scores)
+    preds = (scores >= threshold).astype(int)
+    tp = int(((preds == 1) & (labels == 1)).sum())
+    fp = int(((preds == 1) & (labels == 0)).sum())
+    tn = int(((preds == 0) & (labels == 0)).sum())
+    fn = int(((preds == 0) & (labels == 1)).sum())
+    denom_rec = tp + fn
+    denom_spec = tn + fp
+    recall = tp / denom_rec if denom_rec > 0 else None
+    spec = tn / denom_spec if denom_spec > 0 else None
+    f1 = f1_score(labels, preds, zero_division=0)
+    return {
+        "threshold": float(threshold),
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "recall": recall,
+        "spec": spec,
+        "f1": f1,
+    }
+
+
+def evaluate_tasks_with_thresholds(task_views, task_thresholds):
+    metrics = {}
+    for name, (labels, scores, _) in task_views.items():
+        thr = task_thresholds.get(name, 0.5)
+        metrics[name] = binary_metrics_at_threshold(labels, scores, thr)
+    return metrics
+
+
+def collect_confusion_examples(task_views, task_thresholds, paths):
+    if paths is None:
+        return {}
+    examples = {}
+    for name, (labels, scores, idxs) in task_views.items():
+        thr = task_thresholds.get(name, 0.5)
+        labels = np.asarray(labels).astype(int)
+        scores = np.asarray(scores)
+        preds = (scores >= thr).astype(int)
+        candidates = {
+            "TP": np.where((preds == 1) & (labels == 1))[0],
+            "FP": np.where((preds == 1) & (labels == 0))[0],
+            "TN": np.where((preds == 0) & (labels == 0))[0],
+            "FN": np.where((preds == 0) & (labels == 1))[0],
+        }
+        row = {"task": name, "threshold": float(thr)}
+        for tag, arr in candidates.items():
+            if len(arr) > 0:
+                global_idx = idxs[arr[0]]
+                row[f"{tag}_path"] = paths[global_idx]
+                row[f"{tag}_pred"] = int(preds[arr[0]])
+                row[f"{tag}_gt"] = int(labels[arr[0]])
+            else:
+                row[f"{tag}_path"] = None
+                row[f"{tag}_pred"] = None
+                row[f"{tag}_gt"] = None
+        examples.setdefault("rows", []).append(row)
+    return examples
+
+
+def ordinal_binary_task_auc(labels, scores):
+    if len(np.unique(labels)) < 2:
+        return None
+    return roc_auc_score(labels, scores)
+
+
+def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
+    y_ord = np.asarray(y_ord)
+    p_ge = np.asarray(p_ge)
+    grades_true = [ordinal_targets_to_grade(row) for row in y_ord]
+    k = p_ge.shape[1]
+
+    metrics = {}
+    if k == 2:
+        metrics["AUROC_ge1"] = ordinal_binary_task_auc(y_ord[:, 0], p_ge[:, 0])
+        metrics["AUROC_ge2"] = ordinal_binary_task_auc(y_ord[:, 1], p_ge[:, 1])
+        p0 = 1 - p_ge[:, 0]
+        p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p2 = np.clip(p_ge[:, 1], 0, 1)
+        probs = np.stack([p0, p1, p2], axis=1)
+        grade_pred = probs.argmax(axis=1).tolist()
+        metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2], average="macro", zero_division=0)
+        return metrics, grades_true, grade_pred
+
+    # 基础三条任务
+    metrics["AUROC_hasHTN"] = ordinal_binary_task_auc(y_ord[:, 0], p_ge[:, 0])
+    metrics["AUROC_severe"] = ordinal_binary_task_auc(y_ord[:, 1], p_ge[:, 1])
+    metrics["AUROC_very_severe"] = ordinal_binary_task_auc(y_ord[:, 2], p_ge[:, 2])
+
+    # 分级概率（近似）
+    p_lv1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+    p_lv2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
+    p_lv3 = np.clip(p_ge[:, 2], 0, 1)
+
+    grades = np.array(grades_true)
+    mask_lv1 = np.isin(grades, [0, 1])
+    if mask_lv1.any() and (~mask_lv1).any():
+        metrics["AUROC_lv1_vs_non"] = ordinal_binary_task_auc(grades[mask_lv1], p_lv1[mask_lv1])
+    else:
+        metrics["AUROC_lv1_vs_non"] = None
+
+    mask_lv2 = np.isin(grades, [0, 2])
+    if mask_lv2.any() and (~mask_lv2).any():
+        metrics["AUROC_lv2_vs_non"] = ordinal_binary_task_auc(grades[mask_lv2] == 2, p_lv2[mask_lv2])
+    else:
+        metrics["AUROC_lv2_vs_non"] = None
+
+    mask_lv3 = np.isin(grades, [0, 3])
+    if mask_lv3.any() and (~mask_lv3).any():
+        metrics["AUROC_lv3_vs_non"] = ordinal_binary_task_auc(grades[mask_lv3] == 3, p_lv3[mask_lv3])
+    else:
+        metrics["AUROC_lv3_vs_non"] = None
+
+    metrics["AUROC_hypertension_vs_non"] = ordinal_binary_task_auc(grades >= 1, p_ge[:, 0])
+
+    grade_pred = decode_ordinal_probs(p_ge, thresholds)
+    return metrics, grades_true, grade_pred
+
+
+def save_thresholds_json(path, thresholds):
+    # 将 numpy 标量转换为 Python float，避免 json 序列化报错
+    def _to_float_dict(d):
+        return {k: float(v) if v is not None else None for k, v in d.items()}
+
+    if isinstance(thresholds, dict):
+        thresholds = {k: _to_float_dict(v) if isinstance(v, dict) else v for k, v in thresholds.items()}
+    with open(path, "w") as f:
+        json.dump(thresholds, f, indent=2)
+
+
+def load_thresholds_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
 
 def metric_AUROC(target, output, nb_classes=14):
     outAUROC = []
