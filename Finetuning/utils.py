@@ -348,6 +348,34 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
         probs = np.stack([p0, p1, p2], axis=1)
         grade_pred = probs.argmax(axis=1).tolist()
         metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2], average="macro", zero_division=0)
+        grades = np.array(grades_true)
+        mask_midlow = np.isin(grades, [0, 1])
+        if mask_midlow.any() and (~mask_midlow).any():
+            labels_midlow = (grades[mask_midlow] == 1).astype(int)
+            scores_midlow = p1[mask_midlow]
+            if len(np.unique(labels_midlow)) >= 2:
+                metrics["AUROC_midlow_vs_non"] = roc_auc_score(labels_midlow, scores_midlow)
+                metrics["AUPRC_midlow_vs_non"] = average_precision_score(labels_midlow, scores_midlow)
+            else:
+                metrics["AUROC_midlow_vs_non"] = np.nan
+                metrics["AUPRC_midlow_vs_non"] = np.nan
+        else:
+            metrics["AUROC_midlow_vs_non"] = np.nan
+            metrics["AUPRC_midlow_vs_non"] = np.nan
+
+        mask_high = np.isin(grades, [0, 2])
+        if mask_high.any() and (~mask_high).any():
+            labels_high = (grades[mask_high] == 2).astype(int)
+            scores_high = p2[mask_high]
+            if len(np.unique(labels_high)) >= 2:
+                metrics["AUROC_high_vs_non"] = roc_auc_score(labels_high, scores_high)
+                metrics["AUPRC_high_vs_non"] = average_precision_score(labels_high, scores_high)
+            else:
+                metrics["AUROC_high_vs_non"] = np.nan
+                metrics["AUPRC_high_vs_non"] = np.nan
+        else:
+            metrics["AUROC_high_vs_non"] = np.nan
+            metrics["AUPRC_high_vs_non"] = np.nan
         return metrics, grades_true, grade_pred
 
     # 基础三条任务
