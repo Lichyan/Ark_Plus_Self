@@ -145,7 +145,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
     os.makedirs(output_path)
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
-  ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1"}
+  ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -156,7 +156,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   # training phase
   if args.mode == "train":
     train_weights_path = args.train_weights
-    if args.data_set == "advCheX_hyp_multi_stage_v1" and train_weights_path is None:
+    if args.data_set in {"advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"} and train_weights_path is None:
       candidate = os.path.join(args.data_dir, "train_weights.csv")
       if os.path.exists(candidate):
         train_weights_path = candidate
@@ -340,7 +340,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           if args.data_set in ordinal_datasets:
             if y_val_np is None or p_val_np is None:
               y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
-            ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
+            if args.data_set == "advCheX_hyp_multi_stage_v2":
+              ordinal_thresholds = compute_stage2_thresholds(y_val_np, p_val_np)
+            else:
+              ordinal_thresholds = compute_ordinal_thresholds(y_val_np, p_val_np)
             json_path = save_model_path + "_thresholds.json"
             save_thresholds_json(json_path, ordinal_thresholds)
             meta_path = save_model_path + "_meta.json"
@@ -431,12 +434,18 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         
         if args.data_set in ordinal_datasets:
           thresholds_src = _load_ordinal_thresholds(saved_model, args)
-          thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
+          if args.data_set == "advCheX_hyp_multi_stage_v2":
+            thresholds_use = thresholds_src if isinstance(thresholds_src, dict) else None
+          else:
+            thresholds_use = thresholds_src.get('youden') if isinstance(thresholds_src, dict) else None
           y_np = y_test if isinstance(y_test, np.ndarray) else y_test
           p_np = p_test if isinstance(p_test, np.ndarray) else p_test
           k = p_np.shape[1]
           if getattr(args, "test_time_adjust", False):
-            thresholds_use = compute_ordinal_thresholds(y_np, p_np).get("youden", thresholds_use)
+            if args.data_set == "advCheX_hyp_multi_stage_v2":
+              thresholds_use = compute_stage2_thresholds(y_np, p_np)
+            else:
+              thresholds_use = compute_ordinal_thresholds(y_np, p_np).get("youden", thresholds_use)
 
           metrics, grades_true, grade_pred = evaluate_ordinal_tasks(y_np, p_np, thresholds_use)
           writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
@@ -455,9 +464,15 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 task_thresholds[name] = ge_defaults.get("ge2", 0.5)
               elif name in ["very_severe", "ge3"]:
                 task_thresholds[name] = ge_defaults.get("ge3", 0.5)
-              elif name in ["lv1_vs_non", "lv2_vs_non", "lv3_vs_non", "stage1_vs_non", "stage2_vs_non"]:
+              elif name in ["lv1_vs_non", "lv2_vs_non", "lv3_vs_non"]:
                 labels, scores, _ = task_views[name]
                 task_thresholds[name] = compute_threshold_by_metric(labels, scores, metric="youden")
+              elif name in ["stage1_vs_non", "stage2_vs_non"]:
+                if args.data_set == "advCheX_hyp_multi_stage_v2":
+                  task_thresholds[name] = ge_defaults.get(name, 0.5)
+                else:
+                  labels, scores, _ = task_views[name]
+                  task_thresholds[name] = compute_threshold_by_metric(labels, scores, metric="youden")
               else:
                 task_thresholds[name] = 0.5
 

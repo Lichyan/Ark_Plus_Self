@@ -1,4 +1,4 @@
-from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score
+from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score, confusion_matrix
 import torch
 import numpy as np
 import json
@@ -209,6 +209,40 @@ def compute_ordinal_thresholds(y_ord, p_ge):
     return thresholds
 
 
+def compute_stage2_thresholds(y_ord, p_ge, default=0.5):
+    y_ord = np.asarray(y_ord)
+    p_ge = np.asarray(p_ge)
+    thresholds = {}
+    thresholds["ge1"] = compute_threshold_by_metric(y_ord[:, 0], p_ge[:, 0], metric="youden")
+    thresholds["ge2"] = compute_threshold_by_metric(y_ord[:, 1], p_ge[:, 1], metric="youden")
+
+    grades = np.array([ordinal_targets_to_grade(row) for row in y_ord])
+    p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+    p2 = np.clip(p_ge[:, 1], 0, 1)
+
+    mask_stage1 = np.isin(grades, [0, 1])
+    if mask_stage1.any() and (~mask_stage1).any():
+        labels_stage1 = (grades[mask_stage1] == 1).astype(int)
+        if len(np.unique(labels_stage1)) >= 2:
+            thresholds["stage1_vs_non"] = compute_threshold_by_metric(labels_stage1, p1[mask_stage1], metric="youden")
+        else:
+            thresholds["stage1_vs_non"] = default
+    else:
+        thresholds["stage1_vs_non"] = default
+
+    mask_stage2 = np.isin(grades, [0, 2])
+    if mask_stage2.any() and (~mask_stage2).any():
+        labels_stage2 = (grades[mask_stage2] == 2).astype(int)
+        if len(np.unique(labels_stage2)) >= 2:
+            thresholds["stage2_vs_non"] = compute_threshold_by_metric(labels_stage2, p2[mask_stage2], metric="youden")
+        else:
+            thresholds["stage2_vs_non"] = default
+    else:
+        thresholds["stage2_vs_non"] = default
+
+    return thresholds
+
+
 def build_ordinal_task_views(y_ord, p_ge):
     """返回各二分类任务的标签、分数和索引掩码"""
     y_ord = np.asarray(y_ord)
@@ -348,6 +382,9 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
         probs = np.stack([p0, p1, p2], axis=1)
         grade_pred = probs.argmax(axis=1).tolist()
         metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2], average="macro", zero_division=0)
+        metrics["macro_f1_stage3"] = metrics["macro_f1"]
+        confmat = confusion_matrix(grades_true, grade_pred, labels=[0, 1, 2])
+        metrics["confmat_stage3"] = confmat.astype(int).tolist()
         grades = np.array(grades_true)
         mask_midlow = np.isin(grades, [0, 1])
         if mask_midlow.any() and (~mask_midlow).any():
@@ -362,6 +399,20 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
         else:
             metrics["AUROC_midlow_vs_non"] = np.nan
             metrics["AUPRC_midlow_vs_non"] = np.nan
+
+        mask_high_midlow = np.isin(grades, [1, 2])
+        if mask_high_midlow.any() and (~mask_high_midlow).any():
+            labels_high_midlow = (grades[mask_high_midlow] == 2).astype(int)
+            scores_high_midlow = p2[mask_high_midlow]
+            if len(np.unique(labels_high_midlow)) >= 2:
+                metrics["AUROC_high_vs_midlow"] = roc_auc_score(labels_high_midlow, scores_high_midlow)
+                metrics["AUPRC_high_vs_midlow"] = average_precision_score(labels_high_midlow, scores_high_midlow)
+            else:
+                metrics["AUROC_high_vs_midlow"] = np.nan
+                metrics["AUPRC_high_vs_midlow"] = np.nan
+        else:
+            metrics["AUROC_high_vs_midlow"] = np.nan
+            metrics["AUPRC_high_vs_midlow"] = np.nan
 
         mask_high = np.isin(grades, [0, 2])
         if mask_high.any() and (~mask_high).any():

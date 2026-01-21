@@ -28,7 +28,7 @@ def get_args_parser():
     parser.add_option("--pretrained_weights", dest="pretrained_weights", help="Path to the Pretrained model", default=None, type="string")
     parser.add_option("--num_class", dest="num_class", help="number of the classes in the downstream task",
                       default=14, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -568,6 +568,50 @@ def main(args):
             dataset_val = None
 
         dataset_test = advCheX_hyp_multi_stage_v1(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+        )
+        diseases = label_names
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_multi_stage_v2":
+        # ordinal 0~2 -> 2 thresholds (>=1, >=2)
+        args.num_class = 2
+        label_names = [">=1", ">=2"]
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_multi_stage_v2(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                few_shot=args.few_shot,
+            )
+            dataset_val = advCheX_hyp_multi_stage_v2(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+
+        dataset_test = advCheX_hyp_multi_stage_v2(
             images_path=args.data_dir,
             file_path=args.test_list,
             augment=build_transform_classification(
