@@ -20,6 +20,8 @@ Finetuning/advCheX_Hyp_hebei_kf/
 Finetuning/Outputs/Classification/advCheX/
 Finetuning/Outputs/Classification/advCheX_binary/
 Finetuning/Outputs/Classification/advCheX_hyp/
+Finetuning/Outputs/Classification/advCheX_hyp_multi_level/
+Finetuning/Outputs/Classification/advCheX_hyp_multi_stage_v1/
 
 #忽略奇怪的.py
 Finetuning/logs_reader.py
