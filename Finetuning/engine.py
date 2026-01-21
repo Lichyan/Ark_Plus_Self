@@ -556,10 +556,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           csvwriter.writerows(data)
 
       # 序数高血压分级不走多试次汇总逻辑，避免空列表触发后续均值/逐类统计
-      if args.data_set == "advCheX_hyp_multi_level":
-        return
-
-      if args.data_set == "advCheX_hyp_multi_stage_v1":
+      if args.data_set in {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}:
         return
 
       mean_auc,mean_mcc,mean_ap,mean_f1 = np.array(mean_auc),np.array(mean_mcc),np.array(mean_ap),np.array(mean_f1)
