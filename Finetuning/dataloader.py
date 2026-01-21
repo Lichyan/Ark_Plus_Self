@@ -758,6 +758,8 @@ class advCheX_binary(Dataset):
                 return None, None
 
         image_label = torch.FloatTensor(label)
+        if getattr(self, "return_path", False):
+            return img, image_label, img_path
         return img, image_label
 
     def __len__(self):
@@ -939,8 +941,177 @@ class advCheX_hyp(Dataset):
                 return None, None
 
         image_label = torch.FloatTensor(label)
+        if getattr(self, "return_path", False):
+            return img, image_label, img_path
         return img, image_label
 
     def __len__(self):
         return len(self.img_list)
 
+
+class advCheX_hyp_multi_level(Dataset):
+    """高血压分级：0~3 -> 三个“是否 ≥k”阈值标签"""
+
+    def __init__(self, images_path, file_path, augment, few_shot=-1):
+        self.img_list = []
+        self.img_label = []
+        self.augment = augment
+
+        with open(file_path, "r") as f:
+            csv_reader = csv.reader(f)
+            header = next(csv_reader)
+            for line in csv_reader:
+                img_rel_path = line[0]
+                img_abs_path = os.path.join(images_path, img_rel_path)
+                self.img_list.append(img_abs_path)
+                grade = int(line[1])
+                # ordinal encode: >=1, >=2, >=3
+                lab = [1 if grade >= k else 0 for k in [1, 2, 3]]
+                self.img_label.append(lab)
+
+        if few_shot > 0:
+            indexes = np.arange(len(self.img_list))
+            random.Random(99).shuffle(indexes)
+            num_data = int(len(indexes) * few_shot) if few_shot < 1 else int(few_shot)
+            indexes = indexes[:num_data]
+            _img_list = copy.deepcopy(self.img_list)
+            _img_label = copy.deepcopy(self.img_label)
+            self.img_list = [_img_list[i] for i in indexes]
+            self.img_label = [_img_label[i] for i in indexes]
+            print(f"少样本模式：选取 {len(self.img_list)} 条数据（总{len(_img_list)}）")
+
+    def __getitem__(self, index):
+        img_path = self.img_list[index]
+        label = self.img_label[index]
+        try:
+            img = Image.open(img_path).convert('RGB')
+            _ = img.size
+        except Exception as e:
+            print(f"[IO ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+            return None, None
+        if self.augment is not None:
+            try:
+                img = self.augment(img)
+            except Exception as e:
+                print(f"[AUG ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+                return None, None
+
+        image_label = torch.FloatTensor(label)
+        if getattr(self, "return_path", False):
+            return img, image_label, img_path
+        return img, image_label
+
+    def __len__(self):
+        return len(self.img_list)
+
+
+class advCheX_hyp_multi_stage_v1(Dataset):
+    """高血压分期：0~2 -> 两个“是否 ≥k”阈值标签"""
+
+    def __init__(self, images_path, file_path, augment, few_shot=-1):
+        self.img_list = []
+        self.img_label = []
+        self.augment = augment
+
+        with open(file_path, "r") as f:
+            csv_reader = csv.reader(f)
+            header = next(csv_reader)
+            for line in csv_reader:
+                img_rel_path = line[0]
+                img_abs_path = os.path.join(images_path, img_rel_path)
+                self.img_list.append(img_abs_path)
+                stage = int(line[1])
+                # ordinal encode: >=1, >=2
+                lab = [1 if stage >= k else 0 for k in [1, 2]]
+                self.img_label.append(lab)
+
+        if few_shot > 0:
+            indexes = np.arange(len(self.img_list))
+            random.Random(99).shuffle(indexes)
+            num_data = int(len(indexes) * few_shot) if few_shot < 1 else int(few_shot)
+            indexes = indexes[:num_data]
+            _img_list = copy.deepcopy(self.img_list)
+            _img_label = copy.deepcopy(self.img_label)
+            self.img_list = [_img_list[i] for i in indexes]
+            self.img_label = [_img_label[i] for i in indexes]
+            print(f"少样本模式：选取 {len(self.img_list)} 条数据（总{len(_img_list)}）")
+
+    def __getitem__(self, index):
+        img_path = self.img_list[index]
+        label = self.img_label[index]
+        try:
+            img = Image.open(img_path).convert('RGB')
+            _ = img.size
+        except Exception as e:
+            print(f"[IO ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+            return None, None
+        if self.augment is not None:
+            try:
+                img = self.augment(img)
+            except Exception as e:
+                print(f"[AUG ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+                return None, None
+
+        image_label = torch.FloatTensor(label)
+        if getattr(self, "return_path", False):
+            return img, image_label, img_path
+        return img, image_label
+
+    def __len__(self):
+        return len(self.img_list)
+
+
+class advCheX_hyp_multi_stage_v2(Dataset):
+    """高血压分期：0~2 -> 两个“是否 ≥k”阈值标签"""
+
+    def __init__(self, images_path, file_path, augment, few_shot=-1):
+        self.img_list = []
+        self.img_label = []
+        self.augment = augment
+
+        with open(file_path, "r") as f:
+            csv_reader = csv.reader(f)
+            header = next(csv_reader)
+            for line in csv_reader:
+                img_rel_path = line[0]
+                img_abs_path = os.path.join(images_path, img_rel_path)
+                self.img_list.append(img_abs_path)
+                stage = int(line[1])
+                # ordinal encode: >=1, >=2
+                lab = [1 if stage >= k else 0 for k in [1, 2]]
+                self.img_label.append(lab)
+
+        if few_shot > 0:
+            indexes = np.arange(len(self.img_list))
+            random.Random(99).shuffle(indexes)
+            num_data = int(len(indexes) * few_shot) if few_shot < 1 else int(few_shot)
+            indexes = indexes[:num_data]
+            _img_list = copy.deepcopy(self.img_list)
+            _img_label = copy.deepcopy(self.img_label)
+            self.img_list = [_img_list[i] for i in indexes]
+            self.img_label = [_img_label[i] for i in indexes]
+            print(f"少样本模式：选取 {len(self.img_list)} 条数据（总{len(_img_list)}）")
+
+    def __getitem__(self, index):
+        img_path = self.img_list[index]
+        label = self.img_label[index]
+        try:
+            img = Image.open(img_path).convert('RGB')
+            _ = img.size
+        except Exception as e:
+            print(f"[IO ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+            return None, None
+        if self.augment is not None:
+            try:
+                img = self.augment(img)
+            except Exception as e:
+                print(f"[AUG ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+                return None, None
+
+        image_label = torch.FloatTensor(label)
+        if getattr(self, "return_path", False):
+            return img, image_label, img_path
+        return img, image_label
+
+    def __len__(self):
+        return len(self.img_list)
