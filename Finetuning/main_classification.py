@@ -28,7 +28,7 @@ def get_args_parser():
     parser.add_option("--pretrained_weights", dest="pretrained_weights", help="Path to the Pretrained model", default=None, type="string")
     parser.add_option("--num_class", dest="num_class", help="number of the classes in the downstream task",
                       default=14, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -135,6 +135,12 @@ def get_args_parser():
     parser.add_option("--loss_fn", dest="loss_fn", help="loss function: bce | focal", default="bce", type="string")
     parser.add_option("--focal_alpha", dest="focal_alpha", help="alpha for focal loss", default=0.25, type="float")
     parser.add_option("--focal_gamma", dest="focal_gamma", help="gamma for focal loss", default=2.0, type="float")
+    parser.add_option("--pos_weight", dest="pos_weight", help="comma separated pos_weight for ordinal tasks (len=3)", default=None, type="string")
+    parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
+    parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option('--few_shot', dest="few_shot", help='number or percentage of training samples', default=-1, type=float)
 
 
@@ -487,8 +493,139 @@ def main(args):
         classification_engine(args, model_path, output_path, diseases,
                              dataset_train, dataset_val, dataset_test)
 
+    elif args.data_set == "advCheX_hyp_multi_level":
+        # ordinal 0~3 -> 3 thresholds (>=1, >=2, >=3)
+        args.num_class = 3
+        label_names = [">=1", ">=2", ">=3"]
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_multi_level(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                few_shot=args.few_shot,
+            )
+            dataset_val = advCheX_hyp_multi_level(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+
+        dataset_test = advCheX_hyp_multi_level(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+        )
+        diseases = label_names
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_multi_stage_v1":
+        # ordinal 0~2 -> 2 thresholds (>=1, >=2)
+        args.num_class = 2
+        label_names = [">=1", ">=2"]
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_multi_stage_v1(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                few_shot=args.few_shot,
+            )
+            dataset_val = advCheX_hyp_multi_stage_v1(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+
+        dataset_test = advCheX_hyp_multi_stage_v1(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+        )
+        diseases = label_names
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_multi_stage_v2":
+        # ordinal 0~2 -> 2 thresholds (>=1, >=2)
+        args.num_class = 2
+        label_names = [">=1", ">=2"]
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_multi_stage_v2(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                few_shot=args.few_shot,
+            )
+            dataset_val = advCheX_hyp_multi_stage_v2(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+
+        dataset_test = advCheX_hyp_multi_stage_v2(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+        )
+        diseases = label_names
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
 
 if __name__ == '__main__':
     args = get_args_parser()
     main(args)
-
