@@ -559,6 +559,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       if args.data_set == "advCheX_hyp_multi_level":
         return
 
+      if args.data_set == "advCheX_hyp_multi_stage_v1":
+        return
+
       mean_auc,mean_mcc,mean_ap,mean_f1 = np.array(mean_auc),np.array(mean_mcc),np.array(mean_ap),np.array(mean_f1)
       print(">> All trials: mAUC = {}\n mMCC = {}\n mAP = {}\n mF1 = {}\n ".format(np.array2string(mean_auc, precision=4, separator=','),
                                                                                    np.array2string(mean_mcc, precision=4, separator=','),
