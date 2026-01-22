@@ -21,3 +21,7 @@ Changes: 新增 advCheX_hyp_multi_stage_v2 数据集并在训练时保存 ge1/ge
 [2025-12-08] -codex
 Reason: 实现高血压分级+分层联合任务 v1（共享 encoder 双头）并补充 joint consistency 推理与评估。
 Changes: 新增 advCheX_hyp_multi_grade_stage_v1 数据集与不一致样本校验；引入双头模型、分头 pos_weight 与 loss 权重配置；评估侧加入 grade/stage/joint 指标、JointSoftAcc 与 under-triage 统计、joint prior 推理与独立阈值保存，测试结果写入 json 并跳过多试次汇总。
+
+[2025-12-09] -codex
+Reason: 修复 advCheX_hyp_multi_grade_stage_v1 测试阶段多头输出被误当成单头张量导致的 cpu() 报错。
+Changes: 测试分支在转换 y_test/p_test 为 numpy 前增加 dict 判断，确保多头测试流程正常输出指标且不影响既有单头/序数任务。

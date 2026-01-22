@@ -572,8 +572,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           else:
             y_test, p_test = test_out
             path_list = None
-          y_test = y_test.cpu().numpy()
-          p_test = p_test.cpu().numpy()
+          if not isinstance(y_test, dict):
+            y_test = y_test.cpu().numpy()
+            p_test = p_test.cpu().numpy()
 
         if args.data_set in ["RSNAPneumonia", "COVIDx"]:
           acc = accuracy_score(np.argmax(y_test,axis=1),np.argmax(p_test,axis=1))
