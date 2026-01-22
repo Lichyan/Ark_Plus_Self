@@ -464,6 +464,276 @@ def evaluate_ordinal_tasks(y_ord, p_ge, thresholds=None):
     return metrics, grades_true, grade_pred
 
 
+JOINT_LABELS = [(0, 0), (1, 1), (1, 2), (2, 1), (2, 2), (3, 2)]
+JOINT_LABEL_TO_INDEX = {pair: idx for idx, pair in enumerate(JOINT_LABELS)}
+
+
+def safe_roc_auc(labels, scores):
+    labels = np.asarray(labels)
+    scores = np.asarray(scores)
+    if len(np.unique(labels)) < 2:
+        return np.nan
+    return roc_auc_score(labels, scores)
+
+
+def safe_auprc(labels, scores):
+    labels = np.asarray(labels)
+    scores = np.asarray(scores)
+    if len(np.unique(labels)) < 2:
+        return np.nan
+    return average_precision_score(labels, scores)
+
+
+def ordinal_logits_to_probs(logits):
+    logits = np.asarray(logits)
+    return 1.0 / (1.0 + np.exp(-logits))
+
+
+def ordinal_probs_to_class_probs(p_ge):
+    p_ge = np.asarray(p_ge)
+    k = p_ge.shape[1]
+    if k == 2:
+        p0 = 1 - p_ge[:, 0]
+        p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p2 = np.clip(p_ge[:, 1], 0, 1)
+        return np.stack([p0, p1, p2], axis=1)
+    p0 = 1 - p_ge[:, 0]
+    p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+    p2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
+    p3 = np.clip(p_ge[:, 2], 0, 1)
+    return np.stack([p0, p1, p2, p3], axis=1)
+
+
+def build_joint_prior_mimic(grades, stages, eps=1e-3):
+    grades = np.asarray(grades)
+    stages = np.asarray(stages)
+    prior = np.zeros((4, 3), dtype=np.float32)
+    for g in range(4):
+        mask = grades == g
+        if mask.any():
+            counts = np.bincount(stages[mask], minlength=3).astype(np.float32)
+        else:
+            counts = np.zeros(3, dtype=np.float32)
+        counts = counts + eps
+        prior[g] = counts / counts.sum()
+    return prior
+
+
+def _normalize_prior(prior, eps=1e-6):
+    prior = np.asarray(prior, dtype=np.float32)
+    prior = np.maximum(prior, eps)
+    prior = prior / prior.sum(axis=1, keepdims=True)
+    return prior
+
+
+def compute_joint_distribution(pG, pS, prior=None, alpha=0.2, eps=1e-12):
+    pG = np.asarray(pG)
+    pS = np.asarray(pS)
+    if prior is None:
+        prior = np.ones((4, 3), dtype=np.float32)
+    prior = _normalize_prior(prior)
+    scores = []
+    for g, s in JOINT_LABELS:
+        score = pG[:, g] * pS[:, s] * (prior[g, s] ** alpha)
+        scores.append(score)
+    scores = np.stack(scores, axis=1)
+    denom = np.sum(scores, axis=1, keepdims=True)
+    denom = np.maximum(denom, eps)
+    return scores / denom
+
+
+def adjust_joint_predictions(grade_pred, stage_pred, pG, pS, prefer_high_stage=True):
+    grade_pred = np.asarray(grade_pred)
+    stage_pred = np.asarray(stage_pred)
+    pG = np.asarray(pG)
+    pS = np.asarray(pS)
+    joint_pred = np.zeros_like(grade_pred)
+    grade_adj = np.zeros_like(grade_pred)
+    stage_adj = np.zeros_like(stage_pred)
+    base_scores = []
+    for g, s in JOINT_LABELS:
+        bias = 1e-6 * s if prefer_high_stage else 0.0
+        base_scores.append(pG[:, g] * pS[:, s] + bias)
+    base_scores = np.stack(base_scores, axis=1)
+    best_joint = base_scores.argmax(axis=1)
+    for i, (g, s) in enumerate(zip(grade_pred, stage_pred)):
+        idx = JOINT_LABEL_TO_INDEX.get((int(g), int(s)))
+        if idx is None:
+            idx = int(best_joint[i])
+        joint_pred[i] = idx
+        grade_adj[i], stage_adj[i] = JOINT_LABELS[int(idx)]
+    return joint_pred, grade_adj, stage_adj
+
+
+def joint_soft_accuracy(grade_gt, stage_gt, grade_pred, stage_pred, gamma_over=0.5):
+    grade_gt = np.asarray(grade_gt)
+    stage_gt = np.asarray(stage_gt)
+    grade_pred = np.asarray(grade_pred)
+    stage_pred = np.asarray(stage_pred)
+    scores = np.zeros_like(stage_gt, dtype=np.float32)
+    match_grade = grade_pred == grade_gt
+    for i in range(len(stage_gt)):
+        if not match_grade[i]:
+            scores[i] = 0.0
+            continue
+        if stage_pred[i] == stage_gt[i]:
+            scores[i] = 1.0
+        elif stage_gt[i] == 1 and stage_pred[i] == 2:
+            scores[i] = gamma_over
+        elif stage_pred[i] < stage_gt[i]:
+            scores[i] = 0.0
+        else:
+            scores[i] = 1.0
+    return float(np.mean(scores)) if len(scores) > 0 else np.nan
+
+
+def under_triage_metrics(stage_gt, stage_pred):
+    stage_gt = np.asarray(stage_gt)
+    stage_pred = np.asarray(stage_pred)
+    if len(stage_gt) == 0:
+        return np.nan, np.nan
+    under_rate = float(np.mean(stage_pred < stage_gt))
+    mask_high = stage_gt == 2
+    if mask_high.any():
+        under_high = float(np.mean(stage_pred[mask_high] < stage_gt[mask_high]))
+    else:
+        under_high = np.nan
+    return under_rate, under_high
+
+
+def evaluate_grade_stage_joint(
+    y_grade,
+    y_stage,
+    p_ge_grade,
+    p_ge_stage,
+    prior=None,
+    prior_alpha=0.2,
+    softacc_gamma_over=0.5,
+):
+    y_grade = np.asarray(y_grade)
+    y_stage = np.asarray(y_stage)
+    p_ge_grade = np.asarray(p_ge_grade)
+    p_ge_stage = np.asarray(p_ge_stage)
+
+    grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
+    stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
+
+    pG = ordinal_probs_to_class_probs(p_ge_grade)
+    pS = ordinal_probs_to_class_probs(p_ge_stage)
+
+    metrics = {}
+    metrics["AUROC_ge1"] = safe_roc_auc(y_grade[:, 0], p_ge_grade[:, 0])
+    metrics["AUROC_ge2"] = safe_roc_auc(y_grade[:, 1], p_ge_grade[:, 1])
+    metrics["AUROC_ge3"] = safe_roc_auc(y_grade[:, 2], p_ge_grade[:, 2])
+
+    grade_pred = pG.argmax(axis=1)
+    metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2, 3], average="macro", zero_division=0)
+    metrics["confmat_grade4"] = confusion_matrix(grades_true, grade_pred, labels=[0, 1, 2, 3]).astype(int).tolist()
+
+    for g in range(4):
+        labels = (grades_true == g).astype(int)
+        metrics[f"AUROC_grade{g}"] = safe_roc_auc(labels, pG[:, g])
+        metrics[f"AUPRC_grade{g}"] = safe_auprc(labels, pG[:, g])
+
+    metrics["AUROC_stage_ge1"] = safe_roc_auc(y_stage[:, 0], p_ge_stage[:, 0])
+    metrics["AUROC_stage_ge2"] = safe_roc_auc(y_stage[:, 1], p_ge_stage[:, 1])
+    metrics["AUROC_ge1_stage"] = metrics["AUROC_stage_ge1"]
+    metrics["AUROC_ge2_stage"] = metrics["AUROC_stage_ge2"]
+
+    stage_pred = pS.argmax(axis=1)
+    metrics["macro_f1_stage3"] = f1_score(stages_true, stage_pred, labels=[0, 1, 2], average="macro", zero_division=0)
+    metrics["confmat_stage3"] = confusion_matrix(stages_true, stage_pred, labels=[0, 1, 2]).astype(int).tolist()
+
+    mask_midlow = np.isin(stages_true, [0, 1])
+    if mask_midlow.any() and (~mask_midlow).any():
+        labels_midlow = (stages_true[mask_midlow] == 1).astype(int)
+        metrics["AUROC_midlow_vs_non"] = safe_roc_auc(labels_midlow, pS[mask_midlow, 1])
+        metrics["AUPRC_midlow_vs_non"] = safe_auprc(labels_midlow, pS[mask_midlow, 1])
+    else:
+        metrics["AUROC_midlow_vs_non"] = np.nan
+        metrics["AUPRC_midlow_vs_non"] = np.nan
+
+    mask_high = np.isin(stages_true, [0, 2])
+    if mask_high.any() and (~mask_high).any():
+        labels_high = (stages_true[mask_high] == 2).astype(int)
+        metrics["AUROC_high_vs_non"] = safe_roc_auc(labels_high, pS[mask_high, 2])
+        metrics["AUPRC_high_vs_non"] = safe_auprc(labels_high, pS[mask_high, 2])
+    else:
+        metrics["AUROC_high_vs_non"] = np.nan
+        metrics["AUPRC_high_vs_non"] = np.nan
+
+    mask_high_midlow = np.isin(stages_true, [1, 2])
+    if mask_high_midlow.any() and (~mask_high_midlow).any():
+        labels_high_midlow = (stages_true[mask_high_midlow] == 2).astype(int)
+        metrics["AUROC_high_vs_midlow"] = safe_roc_auc(labels_high_midlow, pS[mask_high_midlow, 2])
+        metrics["AUPRC_high_vs_midlow"] = safe_auprc(labels_high_midlow, pS[mask_high_midlow, 2])
+    else:
+        metrics["AUROC_high_vs_midlow"] = np.nan
+        metrics["AUPRC_high_vs_midlow"] = np.nan
+
+    joint_gt = np.array([JOINT_LABEL_TO_INDEX.get((int(g), int(s)), -1) for g, s in zip(grades_true, stages_true)])
+    mask_valid_joint = joint_gt >= 0
+    if mask_valid_joint.any():
+        joint_gt_valid = joint_gt[mask_valid_joint]
+        grades_true = grades_true[mask_valid_joint]
+        stages_true = stages_true[mask_valid_joint]
+        pG = pG[mask_valid_joint]
+        pS = pS[mask_valid_joint]
+    else:
+        joint_gt_valid = joint_gt
+
+    joint_pred_hard_raw = pG.argmax(axis=1)
+    stage_pred_hard_raw = pS.argmax(axis=1)
+    joint_pred_hard, grade_pred_hard, stage_pred_hard = adjust_joint_predictions(
+        joint_pred_hard_raw, stage_pred_hard_raw, pG, pS
+    )
+
+    P_joint = compute_joint_distribution(pG, pS, prior=prior, alpha=prior_alpha)
+    joint_pred_pjoint = P_joint.argmax(axis=1)
+    grade_pred_pjoint = np.array([JOINT_LABELS[idx][0] for idx in joint_pred_pjoint])
+    stage_pred_pjoint = np.array([JOINT_LABELS[idx][1] for idx in joint_pred_pjoint])
+
+    if len(joint_gt_valid) == 0:
+        metrics["joint_exact_acc_hard"] = np.nan
+        metrics["joint_exact_acc_pjoint"] = np.nan
+        metrics["joint_macro_f1_hard"] = np.nan
+        metrics["joint_macro_f1_pjoint"] = np.nan
+        metrics["joint_confmat6_hard"] = []
+        metrics["joint_confmat6_pjoint"] = []
+    else:
+        metrics["joint_exact_acc_hard"] = float(np.mean(joint_pred_hard == joint_gt_valid))
+        metrics["joint_exact_acc_pjoint"] = float(np.mean(joint_pred_pjoint == joint_gt_valid))
+        metrics["joint_macro_f1_hard"] = f1_score(joint_gt_valid, joint_pred_hard, labels=list(range(6)),
+                                                  average="macro", zero_division=0)
+        metrics["joint_macro_f1_pjoint"] = f1_score(joint_gt_valid, joint_pred_pjoint, labels=list(range(6)),
+                                                    average="macro", zero_division=0)
+        metrics["joint_confmat6_hard"] = confusion_matrix(
+            joint_gt_valid, joint_pred_hard, labels=list(range(6))
+        ).astype(int).tolist()
+        metrics["joint_confmat6_pjoint"] = confusion_matrix(
+            joint_gt_valid, joint_pred_pjoint, labels=list(range(6))
+        ).astype(int).tolist()
+
+    for idx, (g, s) in enumerate(JOINT_LABELS):
+        labels = (joint_gt_valid == idx).astype(int) if len(joint_gt_valid) > 0 else np.array([])
+        key = f"AUROC_joint_{g}{s}"
+        metrics[key] = safe_roc_auc(labels, P_joint[:, idx]) if len(joint_gt_valid) > 0 else np.nan
+
+    metrics["joint_softacc_hard"] = joint_soft_accuracy(grades_true, stages_true, grade_pred_hard, stage_pred_hard,
+                                                        gamma_over=softacc_gamma_over)
+    metrics["joint_softacc_pjoint"] = joint_soft_accuracy(grades_true, stages_true, grade_pred_pjoint, stage_pred_pjoint,
+                                                          gamma_over=softacc_gamma_over)
+
+    under_rate_hard, under_high_hard = under_triage_metrics(stages_true, stage_pred_hard)
+    under_rate_pjoint, under_high_pjoint = under_triage_metrics(stages_true, stage_pred_pjoint)
+    metrics["under_triage_rate_hard"] = under_rate_hard
+    metrics["under_triage_rate_pjoint"] = under_rate_pjoint
+    metrics["under_triage_on_high_hard"] = under_high_hard
+    metrics["under_triage_on_high_pjoint"] = under_high_pjoint
+
+    return metrics, pG, pS, P_joint
+
+
 def save_thresholds_json(path, thresholds):
     # 将 numpy 标量转换为 Python float，避免 json 序列化报错
     def _to_float_dict(d):
