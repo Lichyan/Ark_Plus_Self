@@ -1,7 +1,8 @@
-from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score, confusion_matrix
+from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score, confusion_matrix, brier_score_loss
 import torch
 import numpy as np
 import json
+import os
 
 class MetricLogger(object):
     """Computes and stores the average and current value"""
@@ -732,6 +733,269 @@ def evaluate_grade_stage_joint(
     metrics["under_triage_on_high_pjoint"] = under_high_pjoint
 
     return metrics, pG, pS, P_joint
+
+
+def multiclass_macro_auc(labels, probs, num_classes):
+    labels = np.asarray(labels)
+    probs = np.asarray(probs)
+    aucs = []
+    for cls in range(num_classes):
+        y_true = (labels == cls).astype(int)
+        aucs.append(safe_roc_auc(y_true, probs[:, cls]))
+    return float(np.nanmean(aucs)) if len(aucs) > 0 else np.nan, aucs
+
+
+def _plot_confusion_matrix(cm, labels, title, save_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+    ax.figure.colorbar(im, ax=ax)
+    ax.set(xticks=np.arange(cm.shape[1]),
+           yticks=np.arange(cm.shape[0]),
+           xticklabels=labels, yticklabels=labels,
+           title=title,
+           ylabel="True label",
+           xlabel="Predicted label")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    thresh = cm.max() / 2.0 if cm.size else 0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, format(cm[i, j], "d"),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_roc_curve(y_true, y_score, title, save_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if len(np.unique(y_true)) < 2:
+        return None
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    auc = roc_auc_score(y_true, y_score)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(fpr, tpr, label=f"AUC={auc:.3f}")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+    return auc
+
+
+def _plot_roc_comparison(curves, title, save_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for name, y_true, y_score in curves:
+        if len(np.unique(y_true)) < 2:
+            continue
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+        auc = roc_auc_score(y_true, y_score)
+        ax.plot(fpr, tpr, label=f"{name} (AUC={auc:.3f})")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_risk_distribution(scores, labels, title, save_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for lab in sorted(np.unique(labels)):
+        ax.hist(scores[labels == lab], bins=30, alpha=0.5, label=f"class {lab}")
+    ax.set_xlabel("Predicted risk")
+    ax.set_ylabel("Count")
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_calibration_curve(y_true, y_prob, title, save_path, n_bins=10):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.calibration import calibration_curve
+
+    if len(np.unique(y_true)) < 2:
+        return None
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy="quantile")
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(prob_pred, prob_true, marker="o", label="Calibration")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
+    ax.set_xlabel("Mean predicted probability")
+    ax.set_ylabel("Fraction of positives")
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+
+def _hosmer_lemeshow(y_true, y_prob, n_bins=10):
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    if len(np.unique(y_true)) < 2:
+        return np.nan
+    bins = np.quantile(y_prob, np.linspace(0, 1, n_bins + 1))
+    bins[0], bins[-1] = -np.inf, np.inf
+    hl = 0.0
+    for i in range(n_bins):
+        mask = (y_prob > bins[i]) & (y_prob <= bins[i + 1])
+        if not mask.any():
+            continue
+        obs = y_true[mask].sum()
+        exp = y_prob[mask].sum()
+        n = mask.sum()
+        exp = np.clip(exp, 1e-6, None)
+        hl += (obs - exp) ** 2 / (exp * (1 - exp / n))
+    return float(hl)
+
+
+def _plot_dca_curve(y_true, y_prob, title, save_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    if len(np.unique(y_true)) < 2:
+        return None
+    thresholds = np.linspace(0.01, 0.99, 99)
+    n = len(y_true)
+    net_benefits = []
+    for thr in thresholds:
+        pred = (y_prob >= thr).astype(int)
+        tp = np.sum((pred == 1) & (y_true == 1))
+        fp = np.sum((pred == 1) & (y_true == 0))
+        nb = (tp / n) - (fp / n) * (thr / (1 - thr))
+        net_benefits.append(nb)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(thresholds, net_benefits, label="Model")
+    ax.plot(thresholds, np.zeros_like(thresholds), linestyle="--", color="gray", label="Treat None")
+    prevalence = np.mean(y_true)
+    treat_all = prevalence - (1 - prevalence) * (thresholds / (1 - thresholds))
+    ax.plot(thresholds, treat_all, linestyle="--", color="red", label="Treat All")
+    ax.set_xlabel("Threshold probability")
+    ax.set_ylabel("Net benefit")
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+
+def compute_modethese_outputs(grades_true, stages_true, pG, pS, P_joint, output_dir):
+    grades_true = np.asarray(grades_true)
+    stages_true = np.asarray(stages_true)
+    pG = np.asarray(pG)
+    pS = np.asarray(pS)
+    P_joint = np.asarray(P_joint)
+
+    metrics = {}
+    # Joint macro AUROC (OvR)
+    joint_aurocs = []
+    for idx in range(len(JOINT_LABELS)):
+        y_true = (np.array([JOINT_LABEL_TO_INDEX.get((int(g), int(s)), -1)
+                            for g, s in zip(grades_true, stages_true)]) == idx).astype(int)
+        joint_aurocs.append(safe_roc_auc(y_true, P_joint[:, idx]))
+    metrics["joint_macro_auroc_ovr"] = float(np.nanmean(joint_aurocs)) if joint_aurocs else np.nan
+    metrics["joint_weighted_f1"] = f1_score(
+        np.array([JOINT_LABEL_TO_INDEX.get((int(g), int(s)), -1) for g, s in zip(grades_true, stages_true)]),
+        P_joint.argmax(axis=1),
+        labels=list(range(len(JOINT_LABELS))),
+        average="weighted",
+        zero_division=0,
+    )
+
+    # Grade metrics
+    grade_macro_auc, grade_auc_list = multiclass_macro_auc(grades_true, pG, num_classes=4)
+    metrics["grade_macro_auc"] = grade_macro_auc
+    metrics["grade_auc_per_class"] = grade_auc_list
+    grade_pred = pG.argmax(axis=1)
+    metrics["grade_f1_per_class"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2, 3], average=None, zero_division=0).tolist()
+    metrics["grade_acc"] = accuracy_score(grades_true, grade_pred)
+
+    # Binary ROC for grade
+    y_any_htn = (grades_true >= 1).astype(int)
+    y_severe = (grades_true >= 2).astype(int)
+    metrics["grade_any_htn_auc"] = safe_roc_auc(y_any_htn, pG[:, 1:].sum(axis=1))
+    metrics["grade_severe_auc"] = safe_roc_auc(y_severe, pG[:, 2:].sum(axis=1))
+
+    # Stage metrics
+    stage_macro_auc, stage_auc_list = multiclass_macro_auc(stages_true, pS, num_classes=3)
+    metrics["stage_macro_auc"] = stage_macro_auc
+    metrics["stage_auc_per_class"] = stage_auc_list
+    stage_pred = pS.argmax(axis=1)
+    metrics["stage_acc"] = accuracy_score(stages_true, stage_pred)
+    # High vs non-high
+    y_high = (stages_true == 2).astype(int)
+    pred_high = (stage_pred == 2).astype(int)
+    tp = np.sum((pred_high == 1) & (y_high == 1))
+    fn = np.sum((pred_high == 0) & (y_high == 1))
+    tn = np.sum((pred_high == 0) & (y_high == 0))
+    fp = np.sum((pred_high == 1) & (y_high == 0))
+    metrics["stage_high_sensitivity"] = tp / (tp + fn) if (tp + fn) > 0 else np.nan
+    metrics["stage_high_specificity"] = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+
+    # Calibration metrics (high risk)
+    metrics["brier_high"] = brier_score_loss(y_high, pS[:, 2]) if len(np.unique(y_high)) >= 2 else np.nan
+    metrics["hosmer_lemeshow_high"] = _hosmer_lemeshow(y_high, pS[:, 2])
+    metrics["nri"] = np.nan
+    metrics["idi"] = np.nan
+
+    # Figures
+    fig_paths = {}
+    fig_paths["Figure1_ROC_grade_any_htn"] = os.path.join(output_dir, "Figure1_ROC_grade_any_htn.png")
+    _plot_roc_curve(y_any_htn, pG[:, 1:].sum(axis=1), "Any HTN vs None (Grade)", fig_paths["Figure1_ROC_grade_any_htn"])
+    fig_paths["Figure2_Confmat_grade"] = os.path.join(output_dir, "Figure2_Confmat_grade.png")
+    _plot_confusion_matrix(confusion_matrix(grades_true, grade_pred, labels=[0, 1, 2, 3]),
+                            labels=["0", "1", "2", "3"], title="Grade Confusion Matrix",
+                            save_path=fig_paths["Figure2_Confmat_grade"])
+
+    fig_paths["Figure3_ROC_comparison"] = os.path.join(output_dir, "Figure3_ROC_comparison.png")
+    _plot_roc_comparison(
+        [
+            ("Any HTN", y_any_htn, pG[:, 1:].sum(axis=1)),
+            ("Severe", y_severe, pG[:, 2:].sum(axis=1)),
+            ("High Risk", y_high, pS[:, 2]),
+        ],
+        title="ROC Comparison",
+        save_path=fig_paths["Figure3_ROC_comparison"],
+    )
+
+    fig_paths["Figure4_DCA_high"] = os.path.join(output_dir, "Figure4_DCA_high.png")
+    _plot_dca_curve(y_high, pS[:, 2], "Decision Curve (High Risk)", fig_paths["Figure4_DCA_high"])
+
+    fig_paths["Figure5_Calibration_high"] = os.path.join(output_dir, "Figure5_Calibration_high.png")
+    _plot_calibration_curve(y_high, pS[:, 2], "Calibration (High Risk)", fig_paths["Figure5_Calibration_high"])
+
+    fig_paths["Figure_stage_risk_dist"] = os.path.join(output_dir, "Figure_stage_risk_dist.png")
+    _plot_risk_distribution(pS[:, 2], stages_true, "Stage High-Risk Distribution", fig_paths["Figure_stage_risk_dist"])
+
+    metrics["figure_paths"] = fig_paths
+    return metrics
 
 
 def save_thresholds_json(path, thresholds):

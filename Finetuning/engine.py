@@ -626,7 +626,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 else:
                   prior = (1 - beta) * prior + beta * private_prior
 
-          metrics, _, _, _ = evaluate_grade_stage_joint(
+          metrics, pG, pS, P_joint = evaluate_grade_stage_joint(
             y_grade,
             y_stage,
             p_grade,
@@ -635,6 +635,18 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
             softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
           )
+          if getattr(args, "modethese", False):
+            grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
+            stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
+            output_dir = os.path.dirname(output_file)
+            metrics["modethese"] = compute_modethese_outputs(
+              grades_true,
+              stages_true,
+              pG,
+              pS,
+              P_joint,
+              output_dir,
+            )
           metrics["joint_label_order"] = JOINT_LABELS
           metrics["thresholds_grade"] = grade_thresholds
           metrics["thresholds_stage"] = stage_thresholds
@@ -758,7 +770,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
     
       
       data = [diseases] if test_diseases is None else [[diseases[d] for d in test_diseases]]
-      data = data + y_test.tolist()
+      if isinstance(y_test, dict):
+        y_grade = y_test["grade"].cpu().numpy()
+        y_stage = y_test["stage"].cpu().numpy()
+        y_concat = np.concatenate([y_grade, y_stage], axis=1)
+        data = data + y_concat.tolist()
+      else:
+        data = data + y_test.tolist()
       print(len(data[0]),len(data[1]))
       # Write data to CSV file
       with open(gt_csv, mode='w', newline='') as file:

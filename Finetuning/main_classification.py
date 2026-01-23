@@ -152,6 +152,8 @@ def get_args_parser():
     parser.add_option("--joint_prior_beta", dest="joint_prior_beta", help="beta for mix prior", default=0.5, type="float")
     parser.add_option("--joint_prior_private_json", dest="joint_prior_private_json", help="private prior json for mix", default=None, type="string")
     parser.add_option("--softacc_gamma_over", dest="softacc_gamma_over", help="gamma for over-triage in soft acc", default=0.5, type="float")
+    parser.add_option("--modethese", dest="modethese", help="enable extended metrics/figures for论文需求", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
