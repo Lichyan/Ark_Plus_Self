@@ -25,7 +25,11 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
     samples, targets = batch
     samples = samples.float().to(device)
     if isinstance(targets, dict):
-      targets = {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in targets.items()}
+      targets = {
+        k: (v.float() if k in ["y_grade", "y_stage"] else v).to(device)
+        if torch.is_tensor(v) else v
+        for k, v in targets.items()
+      }
     else:
       targets = targets.float().to(device)
 
@@ -72,7 +76,11 @@ def evaluate(data_loader_val, device, model, criterion):
       samples, targets = batch
       samples = samples.float().to(device)
       if isinstance(targets, dict):
-        targets = {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in targets.items()}
+        targets = {
+          k: (v.float() if k in ["y_grade", "y_stage"] else v).to(device)
+          if torch.is_tensor(v) else v
+          for k, v in targets.items()
+        }
       else:
         targets = targets.float().to(device)
 
