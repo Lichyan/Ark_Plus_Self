@@ -14,6 +14,7 @@ import numpy as np
 import pydicom as dicom
 import cv2
 from skimage import transform, io, img_as_float, exposure
+from utils import JOINT_LABEL_TO_INDEX
 from albumentations import (
     Compose, HorizontalFlip, CLAHE, HueSaturationValue,
     RandomBrightness, RandomBrightnessContrast, RandomGamma,OneOf,
@@ -1014,6 +1015,7 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
         self.stage_labels = []
         self.grade_list = []
         self.stage_list = []
+        self.joint_ids = []
         self.augment = augment
 
         total_rows = 0
@@ -1059,12 +1061,14 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
                 img_abs_path = os.path.join(images_path, img_rel_path)
                 y_grade = [1 if grade >= k else 0 for k in [1, 2, 3]]
                 y_stage = [1 if stage >= k else 0 for k in [1, 2]]
+                joint_id = JOINT_LABEL_TO_INDEX[(grade, stage)]
 
                 self.img_list.append(img_abs_path)
                 self.grade_labels.append(y_grade)
                 self.stage_labels.append(y_stage)
                 self.grade_list.append(grade)
                 self.stage_list.append(stage)
+                self.joint_ids.append(joint_id)
 
         print(
             "[advCheX_hyp_multi_grade_stage_v1] total_rows={}, drop_rows={}, "
@@ -1084,11 +1088,13 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
             _stage_labels = copy.deepcopy(self.stage_labels)
             _grade_list = copy.deepcopy(self.grade_list)
             _stage_list = copy.deepcopy(self.stage_list)
+            _joint_ids = copy.deepcopy(self.joint_ids)
             self.img_list = [_img_list[i] for i in indexes]
             self.grade_labels = [_grade_labels[i] for i in indexes]
             self.stage_labels = [_stage_labels[i] for i in indexes]
             self.grade_list = [_grade_list[i] for i in indexes]
             self.stage_list = [_stage_list[i] for i in indexes]
+            self.joint_ids = [_joint_ids[i] for i in indexes]
             print(f"少样本模式：选取 {len(self.img_list)} 条数据（总{len(_img_list)}）")
 
     def __getitem__(self, index):
@@ -1097,6 +1103,7 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
         y_stage = self.stage_labels[index]
         grade = self.grade_list[index]
         stage = self.stage_list[index]
+        joint_id = self.joint_ids[index]
         try:
             img = Image.open(img_path).convert('RGB')
             _ = img.size
@@ -1113,6 +1120,9 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
         target = {
             "y_grade": torch.FloatTensor(y_grade),
             "y_stage": torch.FloatTensor(y_stage),
+            "raw_grade": torch.tensor(int(grade), dtype=torch.long),
+            "raw_stage": torch.tensor(int(stage), dtype=torch.long),
+            "joint_id": torch.tensor(int(joint_id), dtype=torch.long),
             "meta": {
                 "grade": int(grade),
                 "stage": int(stage),

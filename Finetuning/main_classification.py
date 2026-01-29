@@ -146,6 +146,13 @@ def get_args_parser():
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--lambda_incomp", dest="lambda_incomp", help="weight for incompatibility loss", default=0.0, type="float")
     parser.add_option("--lambda_joint", dest="lambda_joint", help="weight for joint loss", default=0.0, type="float")
+    parser.add_option("--joint_gate", dest="joint_gate", help="none|htn_only", default="htn_only", type="string")
+    parser.add_option("--joint_detach", dest="joint_detach", help="none|grade|stage|both", default="both", type="string")
+    parser.add_option("--joint_ce_weight_mode", dest="joint_ce_weight_mode", help="none|inv|inv_sqrt", default="inv_sqrt", type="string")
+    parser.add_option("--joint_warmup_epochs", dest="joint_warmup_epochs", help="warmup epochs for joint/incomp", default=5, type="int")
+    parser.add_option("--incomp_mode", dest="incomp_mode", help="mask_sum|log_barrier", default="mask_sum", type="string")
+    parser.add_option("--joint_loss_use_prior", dest="joint_loss_use_prior", help="use prior in joint CE loss", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--joint_prior_mode", dest="joint_prior_mode", help="none|mimic|mix", default="mimic", type="string")
     parser.add_option("--joint_prior_alpha", dest="joint_prior_alpha", help="alpha for joint prior", default=0.2, type="float")
     parser.add_option("--joint_prior_eps", dest="joint_prior_eps", help="eps for joint prior smoothing", default=1e-3, type="float")

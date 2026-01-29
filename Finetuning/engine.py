@@ -89,15 +89,49 @@ class WeightedOrdinalCrossEntropy(torch.nn.Module):
 
 class MultiHeadOrdinalLoss(torch.nn.Module):
     def __init__(self, pos_weight_grade=None, pos_weight_stage=None, w_grade=1.0, w_stage=1.0,
-                 use_joint_train=False, lambda_incomp=0.0, lambda_joint=0.0):
+                 use_joint_train=False, lambda_incomp=0.0, lambda_joint=0.0, joint_gate="htn_only",
+                 joint_detach="both", joint_ce_weight=None, joint_warmup_epochs=5, incomp_mode="mask_sum",
+                 joint_loss_use_prior=False, joint_prior=None, joint_prior_alpha=0.2):
         super().__init__()
         self.loss_grade = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight_grade)
         self.loss_stage = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight_stage)
+        self.loss_joint = torch.nn.NLLLoss(weight=joint_ce_weight)
         self.w_grade = w_grade
         self.w_stage = w_stage
         self.use_joint_train = use_joint_train
         self.lambda_incomp = lambda_incomp
         self.lambda_joint = lambda_joint
+        self.joint_gate = joint_gate
+        self.joint_detach = joint_detach
+        self.joint_warmup_epochs = joint_warmup_epochs
+        self.incomp_mode = incomp_mode
+        self.joint_loss_use_prior = joint_loss_use_prior
+        self.joint_prior = joint_prior
+        self.joint_prior_alpha = joint_prior_alpha
+        self.current_epoch = 0
+        self.last_components = None
+
+    def set_epoch(self, epoch):
+        self.current_epoch = epoch
+
+    def _warmup_factor(self):
+        if self.joint_warmup_epochs is None or self.joint_warmup_epochs <= 0:
+            return 1.0
+        return min(1.0, (self.current_epoch + 1) / float(self.joint_warmup_epochs))
+
+    def _build_joint_probs(self, pG, pS, eps=1e-8, use_prior=False, prior=None, alpha=0.2):
+        if use_prior and prior is not None:
+            prior = prior.to(pG.device)
+            prior = prior / prior.sum(dim=1, keepdim=True).clamp_min(eps)
+        scores = []
+        for g, s in JOINT_LABELS:
+            score = pG[:, g] * pS[:, s]
+            if use_prior and prior is not None:
+                score = score * (prior[g, s] ** alpha)
+            scores.append(score)
+        scores = torch.stack(scores, dim=1)
+        denom = scores.sum(dim=1, keepdim=True).clamp_min(eps)
+        return scores / denom
 
     def forward(self, outputs, targets):
         logits_grade, logits_stage = outputs
@@ -106,8 +140,84 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         loss_grade = self.loss_grade(logits_grade, y_grade)
         loss_stage = self.loss_stage(logits_stage, y_stage)
         loss = self.w_grade * loss_grade + self.w_stage * loss_stage
+        loss_incomp = torch.tensor(0.0, device=loss.device)
+        loss_joint = torch.tensor(0.0, device=loss.device)
+
         if self.use_joint_train and (self.lambda_incomp > 0 or self.lambda_joint > 0):
-            print("[WARN] use_joint_train 未实现联合损失，已忽略 lambda_incomp/lambda_joint", flush=True)
+            ge_g = torch.sigmoid(logits_grade)
+            ge_s = torch.sigmoid(logits_stage)
+            pG0 = 1 - ge_g[:, 0]
+            pG1 = torch.clamp(ge_g[:, 0] - ge_g[:, 1], 0, 1)
+            pG2 = torch.clamp(ge_g[:, 1] - ge_g[:, 2], 0, 1)
+            pG3 = torch.clamp(ge_g[:, 2], 0, 1)
+            pG = torch.stack([pG0, pG1, pG2, pG3], dim=1)
+            pS0 = 1 - ge_s[:, 0]
+            pS1 = torch.clamp(ge_s[:, 0] - ge_s[:, 1], 0, 1)
+            pS2 = torch.clamp(ge_s[:, 1], 0, 1)
+            pS = torch.stack([pS0, pS1, pS2], dim=1)
+            pG = pG.detach() if self.joint_detach == "grade" else pG
+            pS = pS.detach() if self.joint_detach == "stage" else pS
+
+            raw_grade = targets.get("raw_grade")
+            gate_mask = None
+            if self.joint_gate == "htn_only" and raw_grade is not None:
+                gate_mask = raw_grade > 0
+            if gate_mask is not None and gate_mask.sum() == 0:
+                loss_incomp = torch.tensor(0.0, device=loss.device)
+                loss_joint = torch.tensor(0.0, device=loss.device)
+            else:
+                if gate_mask is not None:
+                    pG = pG[gate_mask]
+                    pS = pS[gate_mask]
+                outer = pG[:, :, None] * pS[:, None, :]
+                compat_mask = torch.zeros((4, 3), device=outer.device)
+                for g, s in JOINT_LABELS:
+                    compat_mask[g, s] = 1.0
+                compat_mass = (outer * compat_mask).sum(dim=(1, 2))
+                incompat_mass = (outer * (1 - compat_mask)).sum(dim=(1, 2))
+                if self.incomp_mode == "log_barrier":
+                    loss_incomp = (-torch.log(compat_mass.clamp_min(1e-6))).mean()
+                else:
+                    loss_incomp = incompat_mass.mean()
+
+                joint_ids = targets.get("joint_id")
+                if joint_ids is not None:
+                    if gate_mask is not None:
+                        joint_ids = joint_ids[gate_mask]
+                    if self.joint_detach == "both":
+                        pG_a = pG.detach()
+                        pS_a = pS
+                        pG_b = pG
+                        pS_b = pS.detach()
+                        P_joint_a = self._build_joint_probs(
+                            pG_a, pS_a, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        P_joint_b = self._build_joint_probs(
+                            pG_b, pS_b, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        log_a = torch.log(P_joint_a.clamp_min(1e-8))
+                        log_b = torch.log(P_joint_b.clamp_min(1e-8))
+                        loss_joint = 0.5 * self.loss_joint(log_a, joint_ids) + 0.5 * self.loss_joint(log_b, joint_ids)
+                    else:
+                        P_joint = self._build_joint_probs(
+                            pG, pS, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        log_p = torch.log(P_joint.clamp_min(1e-8))
+                        loss_joint = self.loss_joint(log_p, joint_ids)
+
+            warmup = self._warmup_factor()
+            loss = loss + warmup * (self.lambda_incomp * loss_incomp + self.lambda_joint * loss_joint)
+
+        self.last_components = {
+            "loss_grade": float(loss_grade.detach().cpu().item()),
+            "loss_stage": float(loss_stage.detach().cpu().item()),
+            "loss_incomp": float(loss_incomp.detach().cpu().item()),
+            "loss_joint": float(loss_joint.detach().cpu().item()),
+            "loss_total": float(loss.detach().cpu().item()),
+        }
         return loss
 
 
@@ -157,6 +267,24 @@ def _parse_pos_weight_multi(args, dataset_train, device):
         pos_weight_stage = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
 
     return pos_weight_grade, pos_weight_stage
+
+
+def _compute_joint_class_weights(dataset_train, mode="inv_sqrt", device=None):
+    if mode == "none":
+        return None
+    counts = np.zeros(len(JOINT_LABELS), dtype=np.float32)
+    for jid in getattr(dataset_train, "joint_ids", []):
+        counts[int(jid)] += 1.0
+    counts = np.maximum(counts, 1.0)
+    if mode == "inv":
+        weights = 1.0 / counts
+    elif mode == "inv_sqrt":
+        weights = 1.0 / np.sqrt(counts)
+    else:
+        weights = np.ones_like(counts)
+    weights = weights / np.mean(weights)
+    tensor = torch.tensor(weights, dtype=torch.float32, device=device) if device is not None else torch.tensor(weights)
+    return tensor
 
 
 def _collect_outputs_multi(model, data_loader, device):
@@ -280,6 +408,19 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         print(f"use WeightedOrdinalCrossEntropy, pos_weight={pos_weight}", flush=True)
       elif args.data_set in multihead_datasets:
         pos_weight_grade, pos_weight_stage = _parse_pos_weight_multi(args, dataset_train, device)
+        joint_ce_weight = _compute_joint_class_weights(
+          dataset_train,
+          mode=getattr(args, "joint_ce_weight_mode", "inv_sqrt"),
+          device=device,
+        )
+        joint_prior = None
+        if getattr(args, "joint_loss_use_prior", False):
+          joint_prior = build_joint_prior_mimic(
+            np.array(dataset_train.grade_list),
+            np.array(dataset_train.stage_list),
+            eps=getattr(args, "joint_prior_eps", 1e-3),
+          )
+          joint_prior = torch.tensor(joint_prior, dtype=torch.float32, device=device)
         criterion = MultiHeadOrdinalLoss(
           pos_weight_grade=pos_weight_grade,
           pos_weight_stage=pos_weight_stage,
@@ -288,6 +429,14 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           use_joint_train=getattr(args, "use_joint_train", False),
           lambda_incomp=getattr(args, "lambda_incomp", 0.0),
           lambda_joint=getattr(args, "lambda_joint", 0.0),
+          joint_gate=getattr(args, "joint_gate", "htn_only"),
+          joint_detach=getattr(args, "joint_detach", "both"),
+          joint_ce_weight=joint_ce_weight,
+          joint_warmup_epochs=getattr(args, "joint_warmup_epochs", 5),
+          incomp_mode=getattr(args, "incomp_mode", "mask_sum"),
+          joint_loss_use_prior=getattr(args, "joint_loss_use_prior", False),
+          joint_prior=joint_prior,
+          joint_prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
         )
         print(
           f"use MultiHeadOrdinalLoss, pos_weight_grade={pos_weight_grade}, pos_weight_stage={pos_weight_stage}",
@@ -384,9 +533,32 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       for epoch in range(start_epoch, args.epochs):
         if args.skip_training:
           break
-        train_one_epoch(data_loader_train,device, model, criterion, optimizer, epoch)
+        if hasattr(criterion, "set_epoch"):
+          criterion.set_epoch(epoch)
+        train_out = train_one_epoch(data_loader_train,device, model, criterion, optimizer, epoch)
+        train_loss = train_out[0] if isinstance(train_out, tuple) else train_out
+        train_components = train_out[1] if isinstance(train_out, tuple) else None
 
-        val_loss = evaluate(data_loader_val, device,model, criterion)
+        val_out = evaluate(data_loader_val, device,model, criterion)
+        val_loss = val_out[0] if isinstance(val_out, tuple) else val_out
+        val_components = val_out[1] if isinstance(val_out, tuple) else None
+        if args.data_set in multihead_datasets and train_components is not None and val_components is not None:
+          print(
+            "[MultiHead][Loss] train: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f} | "
+            "val: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f}".format(
+              train_components.get("loss_grade", 0.0),
+              train_components.get("loss_stage", 0.0),
+              train_components.get("loss_incomp", 0.0),
+              train_components.get("loss_joint", 0.0),
+              train_components.get("loss_total", train_loss),
+              val_components.get("loss_grade", 0.0),
+              val_components.get("loss_stage", 0.0),
+              val_components.get("loss_incomp", 0.0),
+              val_components.get("loss_joint", 0.0),
+              val_components.get("loss_total", val_loss),
+            ),
+            flush=True,
+          )
 
         y_val_np, p_val_np, val_auc_hyp = None, None, None
         y_grade_val, y_stage_val, p_grade_val, p_stage_val = None, None, None, None
@@ -650,6 +822,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           metrics["joint_label_order"] = JOINT_LABELS
           metrics["thresholds_grade"] = grade_thresholds
           metrics["thresholds_stage"] = stage_thresholds
+          metrics["loss_grade"] = np.nan
+          metrics["loss_stage"] = np.nan
+          metrics["loss_incomp"] = np.nan
+          metrics["loss_joint"] = np.nan
           writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
           experiment = reader.readline()
           continue

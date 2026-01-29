@@ -29,3 +29,7 @@ Changes: 测试分支在转换 y_test/p_test 为 numpy 前增加 dict 判断，�
 [2025-12-10] -codex
 Reason: 处理多头测试 gt.csv 写入与论文扩展指标/图表输出需求。
 Changes: 多头测试写入 gt.csv 时合并 grade/stage 标签避免 dict 调用 tolist 报错；新增 --modethese 扩展指标与图表输出路径（ROC/混淆矩阵/风险分布/校准/DCA等）写入结果目录。
+
+[2025-12-11] -codex
+Reason: 多头训练加入 L_incomp/L_joint 并新增 joint 控制项，满足联合损失训练需求。
+Changes: advCheX_hyp_multi_grade_stage_v1 增加 raw_grade/raw_stage/joint_id；MultiHeadOrdinalLoss 引入 joint CE 与不兼容惩罚、warmup、gate/detach/权重策略与可选 prior；训练日志输出多头损失分量并在测试指标中附加 loss 字段（NaN 占位）。

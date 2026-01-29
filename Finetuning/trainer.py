@@ -17,6 +17,8 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
   model.train()
 
   end = time.time()
+  component_sums = {}
+  component_count = 0
   for i, batch in enumerate(data_loader_train):
     if batch is None:
       continue
@@ -29,6 +31,10 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
 
     outputs = model(samples)
     loss = criterion(outputs, targets)
+    if hasattr(criterion, "last_components") and criterion.last_components is not None:
+      for key, val in criterion.last_components.items():
+        component_sums[key] = component_sums.get(key, 0.0) + float(val)
+      component_count += 1
 
     optimizer.zero_grad()
     loss.backward()
@@ -40,6 +46,11 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
 
     if i % 50 == 0:
       progress.display(i)
+
+  if component_count > 0:
+    avg_components = {k: v / component_count for k, v in component_sums.items()}
+    return losses.avg, avg_components
+  return losses.avg
 
 
 def evaluate(data_loader_val, device, model, criterion):
@@ -53,6 +64,8 @@ def evaluate(data_loader_val, device, model, criterion):
       [batch_time, losses], prefix='Val: ')
 
     end = time.time()
+    component_sums = {}
+    component_count = 0
     for i, batch in enumerate(data_loader_val):
       if batch is None:
         continue
@@ -65,6 +78,10 @@ def evaluate(data_loader_val, device, model, criterion):
 
       outputs = model(samples)
       loss = criterion(outputs, targets)
+      if hasattr(criterion, "last_components") and criterion.last_components is not None:
+        for key, val in criterion.last_components.items():
+          component_sums[key] = component_sums.get(key, 0.0) + float(val)
+        component_count += 1
 
       losses.update(loss.item(), samples.size(0))
       batch_time.update(time.time() - end)
@@ -73,6 +90,9 @@ def evaluate(data_loader_val, device, model, criterion):
       if i % 50 == 0:
         progress.display(i)
 
+  if component_count > 0:
+    avg_components = {k: v / component_count for k, v in component_sums.items()}
+    return losses.avg, avg_components
   return losses.avg
 
 
