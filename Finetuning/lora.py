@@ -96,9 +96,16 @@ def freeze_non_lora_parameters(model: nn.Module, keep_head: bool = True) -> None
             module.lora_A.weight.requires_grad = True
             module.lora_B.weight.requires_grad = True
 
-    if keep_head and hasattr(model, "head"):
-        for param in model.head.parameters():
-            param.requires_grad = True
+    if keep_head:
+        if hasattr(model, "head"):
+            for param in model.head.parameters():
+                param.requires_grad = True
+        if hasattr(model, "head_grade"):
+            for param in model.head_grade.parameters():
+                param.requires_grad = True
+        if hasattr(model, "head_stage"):
+            for param in model.head_stage.parameters():
+                param.requires_grad = True
 
 
 def get_lora_trainable_parameters(model: nn.Module) -> Iterable[nn.Parameter]:
@@ -108,4 +115,3 @@ def get_lora_trainable_parameters(model: nn.Module) -> Iterable[nn.Parameter]:
         if isinstance(module, LoRALinear):
             yield from module.lora_A.parameters()
             yield from module.lora_B.parameters()
-
