@@ -143,6 +143,8 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         loss_incomp = torch.tensor(0.0, device=loss.device)
         loss_joint = torch.tensor(0.0, device=loss.device)
 
+        mean_p_joint_true = torch.tensor(0.0, device=loss.device)
+        mean_neglog_p_joint_true = torch.tensor(0.0, device=loss.device)
         if self.use_joint_train and (self.lambda_incomp > 0 or self.lambda_joint > 0):
             ge_g = torch.sigmoid(logits_grade)
             ge_s = torch.sigmoid(logits_stage)
@@ -200,6 +202,8 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                         log_a = torch.log(P_joint_a.clamp_min(1e-8))
                         log_b = torch.log(P_joint_b.clamp_min(1e-8))
                         loss_joint = 0.5 * self.loss_joint(log_a, joint_ids) + 0.5 * self.loss_joint(log_b, joint_ids)
+                        P_joint_mean = 0.5 * (P_joint_a + P_joint_b)
+                        p_true = P_joint_mean.gather(1, joint_ids.unsqueeze(1)).squeeze(1)
                     else:
                         P_joint = self._build_joint_probs(
                             pG, pS, use_prior=self.joint_loss_use_prior,
@@ -207,6 +211,9 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                         )
                         log_p = torch.log(P_joint.clamp_min(1e-8))
                         loss_joint = self.loss_joint(log_p, joint_ids)
+                        p_true = P_joint.gather(1, joint_ids.unsqueeze(1)).squeeze(1)
+                    mean_p_joint_true = p_true.mean()
+                    mean_neglog_p_joint_true = (-torch.log(p_true.clamp_min(1e-8))).mean()
 
             warmup = self._warmup_factor()
             loss = loss + warmup * (self.lambda_incomp * loss_incomp + self.lambda_joint * loss_joint)
@@ -217,6 +224,8 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             "loss_incomp": float(loss_incomp.detach().cpu().item()),
             "loss_joint": float(loss_joint.detach().cpu().item()),
             "loss_total": float(loss.detach().cpu().item()),
+            "mean_p_joint_true": float(mean_p_joint_true.detach().cpu().item()),
+            "mean_neglog_p_joint_true": float(mean_neglog_p_joint_true.detach().cpu().item()),
         }
         return loss
 
@@ -589,6 +598,40 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           val_joint = val_metrics.get("joint_exact_acc_pjoint")
           if val_joint is not None:
             print(f"Epoch {epoch:04d}: val_joint_exact_acc_pjoint={val_joint:.4f}", flush=True)
+          pG_val = ordinal_probs_to_class_probs(p_grade_val)
+          pS_val = ordinal_probs_to_class_probs(p_stage_val)
+          grade_pred = np.argmax(pG_val, axis=1)
+          stage_pred = np.argmax(pS_val, axis=1)
+          joint_probs = compute_joint_distribution(
+            pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
+          )
+          joint_pred = np.argmax(joint_probs, axis=1)
+          grade_counts = np.bincount(grade_pred, minlength=4)
+          stage_counts = np.bincount(stage_pred, minlength=3)
+          joint_counts = np.bincount(joint_pred, minlength=len(JOINT_LABELS))
+          grade_ratio = grade_counts / max(grade_counts.sum(), 1)
+          stage_ratio = stage_counts / max(stage_counts.sum(), 1)
+          joint_ratio = joint_counts / max(joint_counts.sum(), 1)
+          print(
+            "[MultiHead][Dist] grade_count={} ratio={} | stage_count={} ratio={} | joint_count={} ratio={}".format(
+              grade_counts.tolist(),
+              np.round(grade_ratio, 4).tolist(),
+              stage_counts.tolist(),
+              np.round(stage_ratio, 4).tolist(),
+              joint_counts.tolist(),
+              np.round(joint_ratio, 4).tolist(),
+            ),
+            flush=True,
+          )
+          grade_viol_ge2 = float(np.mean(p_grade_val[:, 1] > p_grade_val[:, 0])) if len(p_grade_val) > 0 else 0.0
+          grade_viol_ge3 = float(np.mean(p_grade_val[:, 2] > p_grade_val[:, 1])) if len(p_grade_val) > 0 else 0.0
+          stage_viol_ge2 = float(np.mean(p_stage_val[:, 1] > p_stage_val[:, 0])) if len(p_stage_val) > 0 else 0.0
+          print(
+            "[MultiHead][OrdinalViol] grade_ge2>ge1={:.4f} grade_ge3>ge2={:.4f} stage_ge2>ge1={:.4f}".format(
+              grade_viol_ge2, grade_viol_ge3, stage_viol_ge2
+            ),
+            flush=True,
+          )
 
         lr_scheduler.step(val_loss)
 

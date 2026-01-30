@@ -33,3 +33,7 @@ Changes: 多头测试写入 gt.csv 时合并 grade/stage 标签避免 dict 调�
 [2025-12-11] -codex
 Reason: 多头训练加入 L_incomp/L_joint 并新增 joint 控制项，满足联合损失训练需求。
 Changes: advCheX_hyp_multi_grade_stage_v1 增加 raw_grade/raw_stage/joint_id；MultiHeadOrdinalLoss 引入 joint CE 与不兼容惩罚、warmup、gate/detach/权重策略与可选 prior；训练日志输出多头损失分量并在测试指标中附加 loss 字段（NaN 占位）。
+
+[2025-12-12] -codex
+Reason: 多头训练 joint 诊断日志与 P_joint_true 监控需求。
+Changes: MultiHeadOrdinalLoss 记录 mean(P_joint_true)/mean(-logP_joint_true)；多头训练 epoch 末输出 grade/stage/joint 预测分布与 ordinal 单调违例率诊断信息。
