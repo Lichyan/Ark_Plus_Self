@@ -233,6 +233,13 @@ def build_classification_model(args):
         print("Not provide {} pretrained weights for {}.".format(args.init, args.model_name))
         raise Exception("Please provide correct parameters to load the model!")
 
+    if getattr(args, "data_set", "") == "advCheX_hyp_multi_grade_stage_v1":
+        model = MultiHeadOrdinalModel(
+            backbone=model,
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+        )
+
     if getattr(args, "use_lora", False):
         target_tokens = [token.strip() for token in args.lora_targets.split(',') if token.strip()]
         replaced = list(inject_lora(
@@ -256,6 +263,41 @@ def build_classification_model(args):
 
     return model
     
+
+def _extract_backbone_features(backbone, x):
+    if hasattr(backbone, "forward_features"):
+        feats = backbone.forward_features(x)
+        if hasattr(backbone, "forward_head"):
+            try:
+                feats = backbone.forward_head(feats, pre_logits=True)
+            except TypeError:
+                feats = backbone.forward_head(feats)
+        if isinstance(feats, (list, tuple)):
+            feats = feats[0]
+        return feats
+    if hasattr(backbone, "features"):
+        feats = backbone.features(x)
+        return torch.flatten(feats, 1)
+    return backbone(x)
+
+
+class MultiHeadOrdinalModel(nn.Module):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2):
+        super().__init__()
+        self.backbone = backbone
+        feature_dim = getattr(backbone, "num_features", None)
+        if feature_dim is None:
+            feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
+        if feature_dim is None:
+            raise ValueError("无法推断 backbone 特征维度")
+        self.head_grade = nn.Linear(feature_dim, num_class_grade)
+        self.head_stage = nn.Linear(feature_dim, num_class_stage)
+
+    def forward(self, x):
+        feats = _extract_backbone_features(self.backbone, x)
+        logits_grade = self.head_grade(feats)
+        logits_stage = self.head_stage(feats)
+        return logits_grade, logits_stage
 
 def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key=None, scale_up=False, keep_head=False):
     if pretrained_weights.startswith('https'):
@@ -329,4 +371,3 @@ def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key=None
 def save_checkpoint(state,filename='model'):
 
     torch.save(state, filename + '.pth.tar')
-
