@@ -238,6 +238,7 @@ def build_classification_model(args):
             backbone=model,
             num_class_grade=getattr(args, "num_class_grade", 3),
             num_class_stage=getattr(args, "num_class_stage", 2),
+            ordinal_mode=getattr(args, "ordinal_mode", "default"),
         )
 
     if getattr(args, "use_lora", False):
@@ -282,22 +283,38 @@ def _extract_backbone_features(backbone, x):
 
 
 class MultiHeadOrdinalModel(nn.Module):
-    def __init__(self, backbone, num_class_grade=3, num_class_stage=2):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="default"):
         super().__init__()
         self.backbone = backbone
+        self.ordinal_mode = ordinal_mode
         feature_dim = getattr(backbone, "num_features", None)
         if feature_dim is None:
             feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
         if feature_dim is None:
             raise ValueError("无法推断 backbone 特征维度")
-        self.head_grade = nn.Linear(feature_dim, num_class_grade)
-        self.head_stage = nn.Linear(feature_dim, num_class_stage)
+        if ordinal_mode == "CORAL":
+            self.head_grade = CoralHead(feature_dim, num_class_grade)
+            self.head_stage = CoralHead(feature_dim, num_class_stage)
+        else:
+            self.head_grade = nn.Linear(feature_dim, num_class_grade)
+            self.head_stage = nn.Linear(feature_dim, num_class_stage)
 
     def forward(self, x):
         feats = _extract_backbone_features(self.backbone, x)
         logits_grade = self.head_grade(feats)
         logits_stage = self.head_stage(feats)
         return logits_grade, logits_stage
+
+
+class CoralHead(nn.Module):
+    def __init__(self, in_features, num_thresholds):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(in_features))
+        self.bias = nn.Parameter(torch.zeros(num_thresholds))
+
+    def forward(self, x):
+        logits = x.matmul(self.weight)[:, None] + self.bias[None, :]
+        return logits
 
 def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key=None, scale_up=False, keep_head=False):
     if pretrained_weights.startswith('https'):

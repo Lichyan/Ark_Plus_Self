@@ -140,6 +140,13 @@ def get_args_parser():
     parser.add_option("--pos_weight", dest="pos_weight", help="comma separated pos_weight for ordinal tasks (len=3)", default=None, type="string")
     parser.add_option("--pos_weight_grade", dest="pos_weight_grade", help="comma separated pos_weight for grade head (len=3)", default=None, type="string")
     parser.add_option("--pos_weight_stage", dest="pos_weight_stage", help="comma separated pos_weight for stage head (len=2)", default=None, type="string")
+    parser.add_option(
+        "--ordinal_mode",
+        dest="ordinal_mode",
+        help="ordinal mode for multi-head grade/stage: default|CORAL|CORN",
+        default="default",
+        type="string",
+    )
     parser.add_option("--loss_w_grade", dest="loss_w_grade", help="grade head loss weight", default=1.0, type="float")
     parser.add_option("--loss_w_stage", dest="loss_w_stage", help="stage head loss weight", default=1.0, type="float")
     parser.add_option("--use_joint_train", dest="use_joint_train", help="whether use joint training loss", default=False,

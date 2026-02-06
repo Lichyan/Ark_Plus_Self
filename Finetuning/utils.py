@@ -505,6 +505,15 @@ def ordinal_probs_to_class_probs(p_ge):
     return np.stack([p0, p1, p2, p3], axis=1)
 
 
+def corn_marginal_ge_probs(q):
+    if torch.is_tensor(q):
+        q = q.clamp(1e-6, 1 - 1e-6)
+        return torch.cumprod(q, dim=1)
+    q = np.asarray(q)
+    q = np.clip(q, 1e-6, 1 - 1e-6)
+    return np.cumprod(q, axis=1)
+
+
 def build_joint_prior_mimic(grades, stages, eps=1e-3):
     grades = np.asarray(grades)
     stages = np.asarray(stages)
@@ -610,6 +619,7 @@ def evaluate_grade_stage_joint(
     prior=None,
     prior_alpha=0.2,
     softacc_gamma_over=0.5,
+    ordinal_mode="default",
 ):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
@@ -623,9 +633,11 @@ def evaluate_grade_stage_joint(
     pS = ordinal_probs_to_class_probs(p_ge_stage)
 
     metrics = {}
-    metrics["AUROC_ge1"] = safe_roc_auc(y_grade[:, 0], p_ge_grade[:, 0])
-    metrics["AUROC_ge2"] = safe_roc_auc(y_grade[:, 1], p_ge_grade[:, 1])
-    metrics["AUROC_ge3"] = safe_roc_auc(y_grade[:, 2], p_ge_grade[:, 2])
+    metrics["ordinal_mode"] = ordinal_mode
+    if ordinal_mode == "default":
+        metrics["AUROC_ge1"] = safe_roc_auc(y_grade[:, 0], p_ge_grade[:, 0])
+        metrics["AUROC_ge2"] = safe_roc_auc(y_grade[:, 1], p_ge_grade[:, 1])
+        metrics["AUROC_ge3"] = safe_roc_auc(y_grade[:, 2], p_ge_grade[:, 2])
 
     grade_pred = pG.argmax(axis=1)
     metrics["macro_f1"] = f1_score(grades_true, grade_pred, labels=[0, 1, 2, 3], average="macro", zero_division=0)
@@ -636,10 +648,11 @@ def evaluate_grade_stage_joint(
         metrics[f"AUROC_grade{g}"] = safe_roc_auc(labels, pG[:, g])
         metrics[f"AUPRC_grade{g}"] = safe_auprc(labels, pG[:, g])
 
-    metrics["AUROC_stage_ge1"] = safe_roc_auc(y_stage[:, 0], p_ge_stage[:, 0])
-    metrics["AUROC_stage_ge2"] = safe_roc_auc(y_stage[:, 1], p_ge_stage[:, 1])
-    metrics["AUROC_ge1_stage"] = metrics["AUROC_stage_ge1"]
-    metrics["AUROC_ge2_stage"] = metrics["AUROC_stage_ge2"]
+    if ordinal_mode == "default":
+        metrics["AUROC_stage_ge1"] = safe_roc_auc(y_stage[:, 0], p_ge_stage[:, 0])
+        metrics["AUROC_stage_ge2"] = safe_roc_auc(y_stage[:, 1], p_ge_stage[:, 1])
+        metrics["AUROC_ge1_stage"] = metrics["AUROC_stage_ge1"]
+        metrics["AUROC_ge2_stage"] = metrics["AUROC_stage_ge2"]
 
     stage_pred = pS.argmax(axis=1)
     metrics["macro_f1_stage3"] = f1_score(stages_true, stage_pred, labels=[0, 1, 2], average="macro", zero_division=0)

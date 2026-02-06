@@ -1,4 +1,4 @@
-from utils import MetricLogger, ProgressLogger
+from utils import MetricLogger, ProgressLogger, corn_marginal_ge_probs
 from models import build_classification_model
 import time
 import torch
@@ -188,8 +188,12 @@ def test_classification(checkpoint, data_loader_test, device, args):
         printed = True
       if isinstance(out, tuple):
         out_grade, out_stage = out
-        out_grade = torch.sigmoid(out_grade)
-        out_stage = torch.sigmoid(out_stage)
+        if getattr(args, "ordinal_mode", "default") == "CORN":
+          out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))
+          out_stage = corn_marginal_ge_probs(torch.sigmoid(out_stage))
+        else:
+          out_grade = torch.sigmoid(out_grade)
+          out_stage = torch.sigmoid(out_stage)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
@@ -270,8 +274,12 @@ def test_model(model, data_loader_test, args):
         printed = True
       if isinstance(out, tuple):
         out_grade, out_stage = out
-        out_grade = torch.sigmoid(out_grade)
-        out_stage = torch.sigmoid(out_stage)
+        if getattr(args, "ordinal_mode", "default") == "CORN":
+          out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))
+          out_stage = corn_marginal_ge_probs(torch.sigmoid(out_stage))
+        else:
+          out_grade = torch.sigmoid(out_grade)
+          out_stage = torch.sigmoid(out_stage)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
