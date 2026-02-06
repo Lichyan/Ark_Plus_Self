@@ -87,6 +87,182 @@ class WeightedOrdinalCrossEntropy(torch.nn.Module):
         return self.loss(inputs, targets)
 
 
+class MultiHeadOrdinalLoss(torch.nn.Module):
+    def __init__(self, pos_weight_grade=None, pos_weight_stage=None, w_grade=1.0, w_stage=1.0,
+                 use_joint_train=False, lambda_incomp=0.0, lambda_joint=0.0, joint_gate="htn_only",
+                 joint_detach="both", joint_ce_weight=None, joint_warmup_epochs=5, incomp_mode="mask_sum",
+                 joint_loss_use_prior=False, joint_prior=None, joint_prior_alpha=0.2,
+                 ordinal_mode="default"):
+        super().__init__()
+        self.loss_grade = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight_grade)
+        self.loss_stage = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight_stage)
+        self.loss_joint = torch.nn.NLLLoss(weight=joint_ce_weight)
+        self.w_grade = w_grade
+        self.w_stage = w_stage
+        self.use_joint_train = use_joint_train
+        self.lambda_incomp = lambda_incomp
+        self.lambda_joint = lambda_joint
+        self.joint_gate = joint_gate
+        self.joint_detach = joint_detach
+        self.joint_warmup_epochs = joint_warmup_epochs
+        self.incomp_mode = incomp_mode
+        self.joint_loss_use_prior = joint_loss_use_prior
+        self.joint_prior = joint_prior
+        self.joint_prior_alpha = joint_prior_alpha
+        self.ordinal_mode = ordinal_mode
+        self.current_epoch = 0
+        self.last_components = None
+
+    def set_epoch(self, epoch):
+        self.current_epoch = epoch
+
+    def _warmup_factor(self):
+        if self.joint_warmup_epochs is None or self.joint_warmup_epochs <= 0:
+            return 1.0
+        return min(1.0, (self.current_epoch + 1) / float(self.joint_warmup_epochs))
+
+    def _build_joint_probs(self, pG, pS, eps=1e-8, use_prior=False, prior=None, alpha=0.2):
+        if use_prior and prior is not None:
+            prior = prior.to(pG.device)
+            prior = prior / prior.sum(dim=1, keepdim=True).clamp_min(eps)
+        scores = []
+        for g, s in JOINT_LABELS:
+            score = pG[:, g] * pS[:, s]
+            if use_prior and prior is not None:
+                score = score * (prior[g, s] ** alpha)
+            scores.append(score)
+        scores = torch.stack(scores, dim=1)
+        denom = scores.sum(dim=1, keepdim=True).clamp_min(eps)
+        return scores / denom
+
+    def _corn_task_loss(self, logits, targets, pos_weight=None):
+        losses = []
+        task_count = 0
+        num_tasks = logits.shape[1]
+        for t in range(num_tasks):
+            if t == 0:
+                mask = torch.ones_like(targets[:, 0], dtype=torch.bool)
+            else:
+                mask = targets[:, t - 1] >= 0.5
+            if mask.sum() == 0:
+                continue
+            logits_t = logits[mask, t]
+            target_t = targets[mask, t]
+            pos_w = pos_weight[t] if pos_weight is not None else None
+            loss_t = F.binary_cross_entropy_with_logits(logits_t, target_t, pos_weight=pos_w)
+            losses.append(loss_t)
+            task_count += 1
+        if task_count == 0:
+            return torch.tensor(0.0, device=logits.device)
+        return sum(losses) / task_count
+
+    def forward(self, outputs, targets):
+        logits_grade, logits_stage = outputs
+        y_grade = targets["y_grade"]
+        y_stage = targets["y_stage"]
+        if self.ordinal_mode == "CORN":
+            loss_grade = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
+            loss_stage = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
+        else:
+            loss_grade = self.loss_grade(logits_grade, y_grade)
+            loss_stage = self.loss_stage(logits_stage, y_stage)
+        loss = self.w_grade * loss_grade + self.w_stage * loss_stage
+        loss_incomp = torch.tensor(0.0, device=loss.device)
+        loss_joint = torch.tensor(0.0, device=loss.device)
+
+        mean_p_joint_true = torch.tensor(0.0, device=loss.device)
+        mean_neglog_p_joint_true = torch.tensor(0.0, device=loss.device)
+        if self.use_joint_train and (self.lambda_incomp > 0 or self.lambda_joint > 0):
+            if self.ordinal_mode == "CORN":
+                q_g = torch.sigmoid(logits_grade)
+                q_s = torch.sigmoid(logits_stage)
+                ge_g = corn_marginal_ge_probs(q_g)
+                ge_s = corn_marginal_ge_probs(q_s)
+            else:
+                ge_g = torch.sigmoid(logits_grade)
+                ge_s = torch.sigmoid(logits_stage)
+            pG0 = 1 - ge_g[:, 0]
+            pG1 = torch.clamp(ge_g[:, 0] - ge_g[:, 1], 0, 1)
+            pG2 = torch.clamp(ge_g[:, 1] - ge_g[:, 2], 0, 1)
+            pG3 = torch.clamp(ge_g[:, 2], 0, 1)
+            pG = torch.stack([pG0, pG1, pG2, pG3], dim=1)
+            pS0 = 1 - ge_s[:, 0]
+            pS1 = torch.clamp(ge_s[:, 0] - ge_s[:, 1], 0, 1)
+            pS2 = torch.clamp(ge_s[:, 1], 0, 1)
+            pS = torch.stack([pS0, pS1, pS2], dim=1)
+            pG = pG.detach() if self.joint_detach == "grade" else pG
+            pS = pS.detach() if self.joint_detach == "stage" else pS
+
+            raw_grade = targets.get("raw_grade")
+            gate_mask = None
+            if self.joint_gate == "htn_only" and raw_grade is not None:
+                gate_mask = raw_grade > 0
+            if gate_mask is not None and gate_mask.sum() == 0:
+                loss_incomp = torch.tensor(0.0, device=loss.device)
+                loss_joint = torch.tensor(0.0, device=loss.device)
+            else:
+                if gate_mask is not None:
+                    pG = pG[gate_mask]
+                    pS = pS[gate_mask]
+                outer = pG[:, :, None] * pS[:, None, :]
+                compat_mask = torch.zeros((4, 3), device=outer.device)
+                for g, s in JOINT_LABELS:
+                    compat_mask[g, s] = 1.0
+                compat_mass = (outer * compat_mask).sum(dim=(1, 2))
+                incompat_mass = (outer * (1 - compat_mask)).sum(dim=(1, 2))
+                if self.incomp_mode == "log_barrier":
+                    loss_incomp = (-torch.log(compat_mass.clamp_min(1e-6))).mean()
+                else:
+                    loss_incomp = incompat_mass.mean()
+
+                joint_ids = targets.get("joint_id")
+                if joint_ids is not None:
+                    if gate_mask is not None:
+                        joint_ids = joint_ids[gate_mask]
+                    if self.joint_detach == "both":
+                        pG_a = pG.detach()
+                        pS_a = pS
+                        pG_b = pG
+                        pS_b = pS.detach()
+                        P_joint_a = self._build_joint_probs(
+                            pG_a, pS_a, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        P_joint_b = self._build_joint_probs(
+                            pG_b, pS_b, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        log_a = torch.log(P_joint_a.clamp_min(1e-8))
+                        log_b = torch.log(P_joint_b.clamp_min(1e-8))
+                        loss_joint = 0.5 * self.loss_joint(log_a, joint_ids) + 0.5 * self.loss_joint(log_b, joint_ids)
+                        P_joint_mean = 0.5 * (P_joint_a + P_joint_b)
+                        p_true = P_joint_mean.gather(1, joint_ids.unsqueeze(1)).squeeze(1)
+                    else:
+                        P_joint = self._build_joint_probs(
+                            pG, pS, use_prior=self.joint_loss_use_prior,
+                            prior=self.joint_prior, alpha=self.joint_prior_alpha
+                        )
+                        log_p = torch.log(P_joint.clamp_min(1e-8))
+                        loss_joint = self.loss_joint(log_p, joint_ids)
+                        p_true = P_joint.gather(1, joint_ids.unsqueeze(1)).squeeze(1)
+                    mean_p_joint_true = p_true.mean()
+                    mean_neglog_p_joint_true = (-torch.log(p_true.clamp_min(1e-8))).mean()
+
+            warmup = self._warmup_factor()
+            loss = loss + warmup * (self.lambda_incomp * loss_incomp + self.lambda_joint * loss_joint)
+
+        self.last_components = {
+            "loss_grade": float(loss_grade.detach().cpu().item()),
+            "loss_stage": float(loss_stage.detach().cpu().item()),
+            "loss_incomp": float(loss_incomp.detach().cpu().item()),
+            "loss_joint": float(loss_joint.detach().cpu().item()),
+            "loss_total": float(loss.detach().cpu().item()),
+            "mean_p_joint_true": float(mean_p_joint_true.detach().cpu().item()),
+            "mean_neglog_p_joint_true": float(mean_neglog_p_joint_true.detach().cpu().item()),
+        }
+        return loss
+
+
 def _parse_pos_weight(args, dataset_train, device):
     if args.pos_weight:
         parts = [float(x) for x in args.pos_weight.split(',')]
@@ -100,6 +276,92 @@ def _parse_pos_weight(args, dataset_train, device):
     pos_safe = np.maximum(pos, 1.0)
     pw = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
     return pw
+
+
+def _parse_pos_weight_multi(args, dataset_train, device):
+    def _from_list(values, length):
+        if values is None:
+            return None
+        parts = [float(x) for x in values.split(',')]
+        if len(parts) != length:
+            raise ValueError(f"pos_weight 长度应为 {length}，但得到 {len(parts)}")
+        return torch.tensor(parts, dtype=torch.float32, device=device)
+
+    pos_weight_grade = _from_list(getattr(args, "pos_weight_grade", None), 3)
+    pos_weight_stage = _from_list(getattr(args, "pos_weight_stage", None), 2)
+
+    if pos_weight_grade is None:
+        pos = np.zeros(3, dtype=np.float32)
+        N = len(dataset_train.grade_labels)
+        for lab in dataset_train.grade_labels:
+            pos += np.array(lab, dtype=np.float32)
+        neg = np.maximum(N - pos, 1.0)
+        pos_safe = np.maximum(pos, 1.0)
+        pos_weight_grade = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
+
+    if pos_weight_stage is None:
+        pos = np.zeros(2, dtype=np.float32)
+        N = len(dataset_train.stage_labels)
+        for lab in dataset_train.stage_labels:
+            pos += np.array(lab, dtype=np.float32)
+        neg = np.maximum(N - pos, 1.0)
+        pos_safe = np.maximum(pos, 1.0)
+        pos_weight_stage = torch.tensor(neg / pos_safe, dtype=torch.float32, device=device)
+
+    return pos_weight_grade, pos_weight_stage
+
+
+def _compute_joint_class_weights(dataset_train, mode="inv_sqrt", device=None):
+    if mode == "none":
+        return None
+    counts = np.zeros(len(JOINT_LABELS), dtype=np.float32)
+    for jid in getattr(dataset_train, "joint_ids", []):
+        counts[int(jid)] += 1.0
+    counts = np.maximum(counts, 1.0)
+    if mode == "inv":
+        weights = 1.0 / counts
+    elif mode == "inv_sqrt":
+        weights = 1.0 / np.sqrt(counts)
+    else:
+        weights = np.ones_like(counts)
+    weights = weights / np.mean(weights)
+    tensor = torch.tensor(weights, dtype=torch.float32, device=device) if device is not None else torch.tensor(weights)
+    return tensor
+
+
+def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
+    model.eval()
+    y_grade_all = torch.FloatTensor().to(device)
+    y_stage_all = torch.FloatTensor().to(device)
+    p_grade_all = torch.FloatTensor().to(device)
+    p_stage_all = torch.FloatTensor().to(device)
+    with torch.no_grad():
+        for batch in tqdm(data_loader):
+            if batch is None:
+                continue
+            samples, targets = batch
+            samples = samples.float().to(device)
+            y_grade = targets["y_grade"].float().to(device)
+            y_stage = targets["y_stage"].float().to(device)
+            y_grade_all = torch.cat((y_grade_all, y_grade), 0)
+            y_stage_all = torch.cat((y_stage_all, y_stage), 0)
+            logits_grade, logits_stage = model(samples)
+            if ordinal_mode == "CORN":
+                q_grade = torch.sigmoid(logits_grade)
+                q_stage = torch.sigmoid(logits_stage)
+                p_grade = corn_marginal_ge_probs(q_grade)
+                p_stage = corn_marginal_ge_probs(q_stage)
+            else:
+                p_grade = torch.sigmoid(logits_grade)
+                p_stage = torch.sigmoid(logits_stage)
+            p_grade_all = torch.cat((p_grade_all, p_grade), 0)
+            p_stage_all = torch.cat((p_stage_all, p_stage), 0)
+    return (
+        y_grade_all.cpu().numpy(),
+        y_stage_all.cpu().numpy(),
+        p_grade_all.cpu().numpy(),
+        p_stage_all.cpu().numpy(),
+    )
 
 
 def _load_ordinal_thresholds(saved_model, args):
@@ -146,6 +408,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -191,6 +454,43 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         pos_weight = _parse_pos_weight(args, dataset_train, device)
         criterion = WeightedOrdinalCrossEntropy(pos_weight=pos_weight)
         print(f"use WeightedOrdinalCrossEntropy, pos_weight={pos_weight}", flush=True)
+      elif args.data_set in multihead_datasets:
+        pos_weight_grade, pos_weight_stage = _parse_pos_weight_multi(args, dataset_train, device)
+        joint_ce_weight = _compute_joint_class_weights(
+          dataset_train,
+          mode=getattr(args, "joint_ce_weight_mode", "inv_sqrt"),
+          device=device,
+        )
+        joint_prior = None
+        if getattr(args, "joint_loss_use_prior", False):
+          joint_prior = build_joint_prior_mimic(
+            np.array(dataset_train.grade_list),
+            np.array(dataset_train.stage_list),
+            eps=getattr(args, "joint_prior_eps", 1e-3),
+          )
+          joint_prior = torch.tensor(joint_prior, dtype=torch.float32, device=device)
+        criterion = MultiHeadOrdinalLoss(
+          pos_weight_grade=pos_weight_grade,
+          pos_weight_stage=pos_weight_stage,
+          w_grade=getattr(args, "loss_w_grade", 1.0),
+          w_stage=getattr(args, "loss_w_stage", 1.0),
+          use_joint_train=getattr(args, "use_joint_train", False),
+          lambda_incomp=getattr(args, "lambda_incomp", 0.0),
+          lambda_joint=getattr(args, "lambda_joint", 0.0),
+          joint_gate=getattr(args, "joint_gate", "htn_only"),
+          joint_detach=getattr(args, "joint_detach", "both"),
+          joint_ce_weight=joint_ce_weight,
+          joint_warmup_epochs=getattr(args, "joint_warmup_epochs", 5),
+          incomp_mode=getattr(args, "incomp_mode", "mask_sum"),
+          joint_loss_use_prior=getattr(args, "joint_loss_use_prior", False),
+          joint_prior=joint_prior,
+          joint_prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
+          ordinal_mode=getattr(args, "ordinal_mode", "default"),
+        )
+        print(
+          f"use MultiHeadOrdinalLoss, pos_weight_grade={pos_weight_grade}, pos_weight_stage={pos_weight_stage}",
+          flush=True,
+        )
       elif args.loss_fn.lower() == 'focal':
         criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
         print("use FocalLoss...", flush=True)
@@ -228,7 +528,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       if args.freeze_encoder and not getattr(args, "use_lora", False):
         print("===> freezing encoder (linear probe)...")
         for name, p in model.named_parameters():
-          p.requires_grad = (name in ['head.weight', 'head.bias'])
+          if args.data_set in multihead_datasets:
+            p.requires_grad = name.startswith('head_grade') or name.startswith('head_stage')
+          else:
+            p.requires_grad = (name in ['head.weight', 'head.bias'])
 
       if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
@@ -279,11 +582,35 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       for epoch in range(start_epoch, args.epochs):
         if args.skip_training:
           break
-        train_one_epoch(data_loader_train,device, model, criterion, optimizer, epoch)
+        if hasattr(criterion, "set_epoch"):
+          criterion.set_epoch(epoch)
+        train_out = train_one_epoch(data_loader_train,device, model, criterion, optimizer, epoch)
+        train_loss = train_out[0] if isinstance(train_out, tuple) else train_out
+        train_components = train_out[1] if isinstance(train_out, tuple) else None
 
-        val_loss = evaluate(data_loader_val, device,model, criterion)
+        val_out = evaluate(data_loader_val, device,model, criterion)
+        val_loss = val_out[0] if isinstance(val_out, tuple) else val_out
+        val_components = val_out[1] if isinstance(val_out, tuple) else None
+        if args.data_set in multihead_datasets and train_components is not None and val_components is not None:
+          print(
+            "[MultiHead][Loss] train: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f} | "
+            "val: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f}".format(
+              train_components.get("loss_grade", 0.0),
+              train_components.get("loss_stage", 0.0),
+              train_components.get("loss_incomp", 0.0),
+              train_components.get("loss_joint", 0.0),
+              train_components.get("loss_total", train_loss),
+              val_components.get("loss_grade", 0.0),
+              val_components.get("loss_stage", 0.0),
+              val_components.get("loss_incomp", 0.0),
+              val_components.get("loss_joint", 0.0),
+              val_components.get("loss_total", val_loss),
+            ),
+            flush=True,
+          )
 
         y_val_np, p_val_np, val_auc_hyp = None, None, None
+        y_grade_val, y_stage_val, p_grade_val, p_stage_val = None, None, None, None
         if args.data_set == "advCheX_hyp_multi_level":
           y_val_np, p_val_np = _collect_outputs(model, data_loader_val, device, args)
           val_metrics, _, _ = evaluate_ordinal_tasks(y_val_np, p_val_np)
@@ -292,13 +619,118 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             print(f"Epoch {epoch:04d}: val_auc_hypertension={val_auc_hyp:.4f}", flush=True)
           else:
             print(f"Epoch {epoch:04d}: val_auc_hypertension=N/A (single class)", flush=True)
+        if args.data_set in multihead_datasets:
+          y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
+            model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
+          )
+          prior = build_joint_prior_mimic(
+            np.array([ordinal_targets_to_grade(row) for row in y_grade_val]),
+            np.array([ordinal_targets_to_grade(row) for row in y_stage_val]),
+            eps=getattr(args, "joint_prior_eps", 1e-3),
+          )
+          val_metrics, _, _, _ = evaluate_grade_stage_joint(
+            y_grade_val,
+            y_stage_val,
+            p_grade_val,
+            p_stage_val,
+            prior=prior,
+            prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
+            softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
+            ordinal_mode=getattr(args, "ordinal_mode", "default"),
+          )
+          val_joint = val_metrics.get("joint_exact_acc_pjoint")
+          if val_joint is not None:
+            print(f"Epoch {epoch:04d}: val_joint_exact_acc_pjoint={val_joint:.4f}", flush=True)
+          print(f"[MultiHead][Mode] ordinal_mode={getattr(args, 'ordinal_mode', 'default')}", flush=True)
+          pG_val = ordinal_probs_to_class_probs(p_grade_val)
+          pS_val = ordinal_probs_to_class_probs(p_stage_val)
+          grade_pred = np.argmax(pG_val, axis=1)
+          stage_pred = np.argmax(pS_val, axis=1)
+          joint_probs = compute_joint_distribution(
+            pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
+          )
+          joint_pred = np.argmax(joint_probs, axis=1)
+          grade_counts = np.bincount(grade_pred, minlength=4)
+          stage_counts = np.bincount(stage_pred, minlength=3)
+          joint_counts = np.bincount(joint_pred, minlength=len(JOINT_LABELS))
+          grade_ratio = grade_counts / max(grade_counts.sum(), 1)
+          stage_ratio = stage_counts / max(stage_counts.sum(), 1)
+          joint_ratio = joint_counts / max(joint_counts.sum(), 1)
+          print(
+            "[MultiHead][Dist] grade_count={} ratio={} | stage_count={} ratio={} | joint_count={} ratio={}".format(
+              grade_counts.tolist(),
+              np.round(grade_ratio, 4).tolist(),
+              stage_counts.tolist(),
+              np.round(stage_ratio, 4).tolist(),
+              joint_counts.tolist(),
+              np.round(joint_ratio, 4).tolist(),
+            ),
+            flush=True,
+          )
+          mean_pG = np.round(pG_val.mean(axis=0), 4).tolist()
+          mean_pS = np.round(pS_val.mean(axis=0), 4).tolist()
+          ret_s1 = float(pS_val[:, 1].mean()) if len(pS_val) > 0 else 0.0
+          top1_s1 = float((stage_pred == 1).mean()) if len(stage_pred) > 0 else 0.0
+          ret_g12 = float((pG_val[:, 1] + pG_val[:, 2]).mean()) if len(pG_val) > 0 else 0.0
+          top1_g12 = float(np.isin(grade_pred, [1, 2]).mean()) if len(grade_pred) > 0 else 0.0
+          print(
+            "[MultiHead][Retention] stage_pred_count={} grade_pred_count={} | mean_pS={} mean_pG={} | "
+            "RetS1={:.4f} Top1S1={:.4f} RetG12={:.4f} Top1G12={:.4f}".format(
+              stage_counts.tolist(),
+              grade_counts.tolist(),
+              mean_pS,
+              mean_pG,
+              ret_s1,
+              top1_s1,
+              ret_g12,
+              top1_g12,
+            ),
+            flush=True,
+          )
+          grade_viol_ge2 = float(np.mean(p_grade_val[:, 1] > p_grade_val[:, 0])) if len(p_grade_val) > 0 else 0.0
+          grade_viol_ge3 = float(np.mean(p_grade_val[:, 2] > p_grade_val[:, 1])) if len(p_grade_val) > 0 else 0.0
+          stage_viol_ge2 = float(np.mean(p_stage_val[:, 1] > p_stage_val[:, 0])) if len(p_stage_val) > 0 else 0.0
+          if getattr(args, "ordinal_mode", "default") == "CORN":
+            grade_gap = np.stack(
+              [p_grade_val[:, 0] - p_grade_val[:, 1], p_grade_val[:, 1] - p_grade_val[:, 2]],
+              axis=1,
+            )
+            stage_gap = (p_stage_val[:, 0] - p_stage_val[:, 1])[:, None]
+            grade_gap_p5 = np.percentile(grade_gap, 5, axis=0).tolist()
+            grade_gap_p50 = np.percentile(grade_gap, 50, axis=0).tolist()
+            stage_gap_p5 = np.percentile(stage_gap, 5, axis=0).tolist()
+            stage_gap_p50 = np.percentile(stage_gap, 50, axis=0).tolist()
+            print(
+              "[MultiHead][OrdinalViol] (CORN) grade_ge2>ge1={:.4f} grade_ge3>ge2={:.4f} "
+              "stage_ge2>ge1={:.4f} | gap_p5 grade={} stage={} | gap_p50 grade={} stage={}".format(
+                grade_viol_ge2, grade_viol_ge3, stage_viol_ge2,
+                np.round(grade_gap_p5, 4).tolist(),
+                np.round(stage_gap_p5, 4).tolist(),
+                np.round(grade_gap_p50, 4).tolist(),
+                np.round(stage_gap_p50, 4).tolist(),
+              ),
+              flush=True,
+            )
+          else:
+            print(
+              "[MultiHead][OrdinalViol] grade_ge2>ge1={:.4f} grade_ge3>ge2={:.4f} stage_ge2>ge1={:.4f}".format(
+                grade_viol_ge2, grade_viol_ge3, stage_viol_ge2
+              ),
+              flush=True,
+            )
 
         lr_scheduler.step(val_loss)
 
         if args.test_every_epoch:
           y_test, p_test = test_model(model, data_loader_test, args)
-          y_test = y_test.cpu().numpy()
-          p_test = p_test.cpu().numpy()
+          if args.data_set in multihead_datasets:
+            print("[DEBUG] multi-head dataset skip test_every_epoch metrics", flush=True)
+            continue
+          if isinstance(y_test, dict):
+            pass
+          else:
+            y_test = y_test.cpu().numpy()
+            p_test = p_test.cpu().numpy()
 
           if args.data_set in ["RSNAPneumonia", "COVIDx"]:
             acc = accuracy_score(np.argmax(y_test,axis=1),np.argmax(p_test,axis=1))
@@ -355,6 +787,25 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               }, f, indent=2)
             print(f"[Ordinal] thresholds saved to {json_path}", flush=True)
             print(f"[Ordinal] meta saved to {meta_path}", flush=True)
+          elif args.data_set in multihead_datasets:
+            if y_grade_val is None or y_stage_val is None:
+              y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
+                model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
+              )
+            grade_thresholds = compute_ordinal_thresholds(y_grade_val, p_grade_val).get("youden", {})
+            stage_thresholds = compute_stage2_thresholds(y_stage_val, p_stage_val)
+            ordinal_thresholds = {"grade": grade_thresholds, "stage": stage_thresholds}
+            json_path = save_model_path + "_thresholds.json"
+            save_thresholds_json(json_path, ordinal_thresholds)
+            meta_path = save_model_path + "_meta.json"
+            with open(meta_path, "w") as f:
+              json.dump({
+                "epoch": epoch + 1,
+                "lossMIN": float(best_val_loss),
+                "thresholds_json": os.path.basename(json_path)
+              }, f, indent=2)
+            print(f"[Ordinal-MultiHead] thresholds saved to {json_path}", flush=True)
+            print(f"[Ordinal-MultiHead] meta saved to {meta_path}", flush=True)
           else:
             ckpt_payload['optimizer'] = optimizer.state_dict()
             ckpt_payload['scheduler'] = lr_scheduler.state_dict()
@@ -410,7 +861,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         pred_csv = os.path.join(model_path, experiment + ".csv")
         gt_csv = os.path.join(model_path, "gt.csv")
         path_list = None
-        use_cached = os.path.exists(pred_csv) and os.path.exists(gt_csv) and args.data_set != "advCheX_hyp_multi_level"
+        use_cached = os.path.exists(pred_csv) and os.path.exists(gt_csv) and args.data_set not in {
+          "advCheX_hyp_multi_level",
+          "advCheX_hyp_multi_grade_stage_v1",
+        }
         if use_cached:
           y_test = read_from_csv(gt_csv)
           p_test = read_from_csv(pred_csv)
@@ -421,8 +875,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           else:
             y_test, p_test = test_out
             path_list = None
-          y_test = y_test.cpu().numpy()
-          p_test = p_test.cpu().numpy()
+          if not isinstance(y_test, dict):
+            y_test = y_test.cpu().numpy()
+            p_test = p_test.cpu().numpy()
 
         if args.data_set in ["RSNAPneumonia", "COVIDx"]:
           acc = accuracy_score(np.argmax(y_test,axis=1),np.argmax(p_test,axis=1))
@@ -432,6 +887,81 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           accuracy.append(acc)
 
         
+        if args.data_set in multihead_datasets:
+          thresholds_src = _load_ordinal_thresholds(saved_model, args)
+          grade_thresholds = None
+          stage_thresholds = None
+          if isinstance(thresholds_src, dict):
+            grade_thresholds = thresholds_src.get("grade")
+            stage_thresholds = thresholds_src.get("stage")
+
+          y_grade = y_test["grade"].cpu().numpy() if isinstance(y_test, dict) else y_test
+          y_stage = y_test["stage"].cpu().numpy() if isinstance(y_test, dict) else y_test
+          p_grade = p_test["grade"].cpu().numpy() if isinstance(p_test, dict) else p_test
+          p_stage = p_test["stage"].cpu().numpy() if isinstance(p_test, dict) else p_test
+
+          if getattr(args, "test_time_adjust", False):
+            grade_thresholds = compute_ordinal_thresholds(y_grade, p_grade).get("youden", grade_thresholds)
+            stage_thresholds = compute_stage2_thresholds(y_stage, p_stage)
+
+          prior = None
+          if getattr(args, "joint_prior_mode", "mimic") != "none":
+            grades_prior = []
+            stages_prior = []
+            for dataset in [dataset_train, dataset_val]:
+              if dataset is not None and hasattr(dataset, "grade_list"):
+                grades_prior.extend(dataset.grade_list)
+                stages_prior.extend(dataset.stage_list)
+            if grades_prior:
+              prior = build_joint_prior_mimic(
+                np.array(grades_prior),
+                np.array(stages_prior),
+                eps=getattr(args, "joint_prior_eps", 1e-3),
+              )
+            if getattr(args, "joint_prior_mode", "mimic") == "mix":
+              private_path = getattr(args, "joint_prior_private_json", None)
+              if private_path and os.path.exists(private_path):
+                with open(private_path, "r") as f:
+                  private_prior = np.array(json.load(f), dtype=np.float32)
+                beta = getattr(args, "joint_prior_beta", 0.5)
+                if prior is None:
+                  prior = private_prior
+                else:
+                  prior = (1 - beta) * prior + beta * private_prior
+
+          metrics, pG, pS, P_joint = evaluate_grade_stage_joint(
+            y_grade,
+            y_stage,
+            p_grade,
+            p_stage,
+            prior=prior,
+            prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
+            softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
+            ordinal_mode=getattr(args, "ordinal_mode", "default"),
+          )
+          if getattr(args, "modethese", False):
+            grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
+            stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
+            output_dir = os.path.dirname(output_file)
+            metrics["modethese"] = compute_modethese_outputs(
+              grades_true,
+              stages_true,
+              pG,
+              pS,
+              P_joint,
+              output_dir,
+            )
+          metrics["joint_label_order"] = JOINT_LABELS
+          metrics["thresholds_grade"] = grade_thresholds
+          metrics["thresholds_stage"] = stage_thresholds
+          metrics["loss_grade"] = np.nan
+          metrics["loss_stage"] = np.nan
+          metrics["loss_incomp"] = np.nan
+          metrics["loss_joint"] = np.nan
+          writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+          experiment = reader.readline()
+          continue
+
         if args.data_set in ordinal_datasets:
           thresholds_src = _load_ordinal_thresholds(saved_model, args)
           if args.data_set == "advCheX_hyp_multi_stage_v2":
@@ -548,7 +1078,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
     
       
       data = [diseases] if test_diseases is None else [[diseases[d] for d in test_diseases]]
-      data = data + y_test.tolist()
+      if isinstance(y_test, dict):
+        y_grade = y_test["grade"].cpu().numpy()
+        y_stage = y_test["stage"].cpu().numpy()
+        y_concat = np.concatenate([y_grade, y_stage], axis=1)
+        data = data + y_concat.tolist()
+      else:
+        data = data + y_test.tolist()
       print(len(data[0]),len(data[1]))
       # Write data to CSV file
       with open(gt_csv, mode='w', newline='') as file:
@@ -556,7 +1092,12 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           csvwriter.writerows(data)
 
       # 序数高血压分级不走多试次汇总逻辑，避免空列表触发后续均值/逐类统计
-      if args.data_set in {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}:
+      if args.data_set in {
+        "advCheX_hyp_multi_level",
+        "advCheX_hyp_multi_stage_v1",
+        "advCheX_hyp_multi_stage_v2",
+        "advCheX_hyp_multi_grade_stage_v1",
+      }:
         return
 
       mean_auc,mean_mcc,mean_ap,mean_f1 = np.array(mean_auc),np.array(mean_mcc),np.array(mean_ap),np.array(mean_f1)

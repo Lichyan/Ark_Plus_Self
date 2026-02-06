@@ -28,7 +28,9 @@ def get_args_parser():
     parser.add_option("--pretrained_weights", dest="pretrained_weights", help="Path to the Pretrained model", default=None, type="string")
     parser.add_option("--num_class", dest="num_class", help="number of the classes in the downstream task",
                       default=14, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2", default="ChestXray14", type="string")
+    parser.add_option("--num_class_grade", dest="num_class_grade", help="number of grade ordinal logits", default=3, type="int")
+    parser.add_option("--num_class_stage", dest="num_class_stage", help="number of stage ordinal logits", default=2, type="int")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -136,6 +138,36 @@ def get_args_parser():
     parser.add_option("--focal_alpha", dest="focal_alpha", help="alpha for focal loss", default=0.25, type="float")
     parser.add_option("--focal_gamma", dest="focal_gamma", help="gamma for focal loss", default=2.0, type="float")
     parser.add_option("--pos_weight", dest="pos_weight", help="comma separated pos_weight for ordinal tasks (len=3)", default=None, type="string")
+    parser.add_option("--pos_weight_grade", dest="pos_weight_grade", help="comma separated pos_weight for grade head (len=3)", default=None, type="string")
+    parser.add_option("--pos_weight_stage", dest="pos_weight_stage", help="comma separated pos_weight for stage head (len=2)", default=None, type="string")
+    parser.add_option(
+        "--ordinal_mode",
+        dest="ordinal_mode",
+        help="ordinal mode for multi-head grade/stage: default|CORAL|CORN",
+        default="default",
+        type="string",
+    )
+    parser.add_option("--loss_w_grade", dest="loss_w_grade", help="grade head loss weight", default=1.0, type="float")
+    parser.add_option("--loss_w_stage", dest="loss_w_stage", help="stage head loss weight", default=1.0, type="float")
+    parser.add_option("--use_joint_train", dest="use_joint_train", help="whether use joint training loss", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--lambda_incomp", dest="lambda_incomp", help="weight for incompatibility loss", default=0.0, type="float")
+    parser.add_option("--lambda_joint", dest="lambda_joint", help="weight for joint loss", default=0.0, type="float")
+    parser.add_option("--joint_gate", dest="joint_gate", help="none|htn_only", default="htn_only", type="string")
+    parser.add_option("--joint_detach", dest="joint_detach", help="none|grade|stage|both", default="both", type="string")
+    parser.add_option("--joint_ce_weight_mode", dest="joint_ce_weight_mode", help="none|inv|inv_sqrt", default="inv_sqrt", type="string")
+    parser.add_option("--joint_warmup_epochs", dest="joint_warmup_epochs", help="warmup epochs for joint/incomp", default=5, type="int")
+    parser.add_option("--incomp_mode", dest="incomp_mode", help="mask_sum|log_barrier", default="mask_sum", type="string")
+    parser.add_option("--joint_loss_use_prior", dest="joint_loss_use_prior", help="use prior in joint CE loss", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--joint_prior_mode", dest="joint_prior_mode", help="none|mimic|mix", default="mimic", type="string")
+    parser.add_option("--joint_prior_alpha", dest="joint_prior_alpha", help="alpha for joint prior", default=0.2, type="float")
+    parser.add_option("--joint_prior_eps", dest="joint_prior_eps", help="eps for joint prior smoothing", default=1e-3, type="float")
+    parser.add_option("--joint_prior_beta", dest="joint_prior_beta", help="beta for mix prior", default=0.5, type="float")
+    parser.add_option("--joint_prior_private_json", dest="joint_prior_private_json", help="private prior json for mix", default=None, type="string")
+    parser.add_option("--softacc_gamma_over", dest="softacc_gamma_over", help="gamma for over-triage in soft acc", default=0.5, type="float")
+    parser.add_option("--modethese", dest="modethese", help="enable extended metrics/figures for论文需求", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
@@ -524,6 +556,51 @@ def main(args):
             dataset_val = None
 
         dataset_test = advCheX_hyp_multi_level(
+            images_path=args.data_dir,
+            file_path=args.test_list,
+            augment=build_transform_classification(
+                normalize=args.normalization,
+                mode="test",
+                crop_size=args.input_size,
+                resize=args.img_size
+            ),
+        )
+        diseases = label_names
+        classification_engine(args, model_path, output_path, diseases,
+                             dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_multi_grade_stage_v1":
+        args.num_class_grade = 3
+        args.num_class_stage = 2
+        args.num_class = args.num_class_grade
+        label_names = ["grade>=1", "grade>=2", "grade>=3", "stage>=1", "stage>=2"]
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_multi_grade_stage_v1(
+                images_path=args.data_dir,
+                file_path=args.train_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="train",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+                few_shot=args.few_shot,
+            )
+            dataset_val = advCheX_hyp_multi_grade_stage_v1(
+                images_path=args.data_dir,
+                file_path=args.val_list,
+                augment=build_transform_classification(
+                    normalize=args.normalization,
+                    mode="valid",
+                    crop_size=args.input_size,
+                    resize=args.img_size
+                ),
+            )
+        else:
+            dataset_train = None
+            dataset_val = None
+
+        dataset_test = advCheX_hyp_multi_grade_stage_v1(
             images_path=args.data_dir,
             file_path=args.test_list,
             augment=build_transform_classification(
