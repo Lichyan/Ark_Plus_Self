@@ -188,7 +188,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
         printed = True
       if isinstance(out, tuple):
         out_grade, out_stage = out
-        if getattr(args, "ordinal_mode", "default") == "CORN":
+        if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
           out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))
           out_stage = corn_marginal_ge_probs(torch.sigmoid(out_stage))
         else:
@@ -274,7 +274,7 @@ def test_model(model, data_loader_test, args):
         printed = True
       if isinstance(out, tuple):
         out_grade, out_stage = out
-        if getattr(args, "ordinal_mode", "default") == "CORN":
+        if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
           out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))
           out_stage = corn_marginal_ge_probs(torch.sigmoid(out_stage))
         else:
