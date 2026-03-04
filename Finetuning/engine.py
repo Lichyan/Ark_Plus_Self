@@ -903,7 +903,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
 
           if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
             output_dir = os.path.dirname(output_file)
-            metrics, pred_rows = evaluate_grade_stage_sep(
+            metrics, pred_rows, report_lines = evaluate_grade_stage_sep(
               y_grade, y_stage, p_grade, p_stage, output_dir=output_dir, path_list=path_list,
               modethese=getattr(args, "modethese", False)
             )
@@ -913,6 +913,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 writer_csv.writeheader(); writer_csv.writerows(pred_rows)
             with open(os.path.join(output_dir, "metrics.json"), 'w') as fm:
               json.dump(metrics, fm, indent=2, ensure_ascii=False)
+            with open(os.path.join(output_dir, "result.txt"), 'w', encoding='utf-8') as fr:
+              fr.write("\n".join(report_lines) + "\n")
             writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
             experiment = reader.readline()
             continue

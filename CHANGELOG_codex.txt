@@ -1,3 +1,7 @@
+[2026-03-04] -codex
+Reason: sep_v1 测试结果仅生成 PNG/JSON，不便直接与外部工具基于文本讨论；且缺少 stage any-HTN 的校准图输出。
+Changes: advCheX_hyp_multi_grade_stage_sep_v1 测试评估新增 result.txt 文本汇总（包含标量指标、grade/stage/joint 混淆矩阵文字版、invalid 类型计数与图文件清单）；补充 stage any-HTN 校准图 calib_any_htn_stage.png 及对应 ECE_stage/Brier_stage 指标输出，并保持原 predictions.csv/metrics.json 产物不变。
+
 [2025-12-03] -codex
 Reason: 高血压分级测试阶段重复跑同一模型且需支持测试期阈值调整与样本示例导出。
 Changes: 修复 advCheX_hyp_multi_level 测试循环读取 models.log 后未推进游标导致的重复测试；新增测试参数 test_time_adjust/output_special 及相关阈值搜索、混淆示例导出逻辑；扩展数据集与推理支持返回样本路径以便保存示例；保持现有分辨率/增广流程不变。
