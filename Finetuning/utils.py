@@ -1011,6 +1011,207 @@ def compute_modethese_outputs(grades_true, stages_true, pG, pS, P_joint, output_
     return metrics
 
 
+
+
+def expected_calibration_error(y_true, y_prob, n_bins=10):
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob).astype(float)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    n = len(y_true)
+    for i in range(n_bins):
+        left, right = bins[i], bins[i + 1]
+        if i == n_bins - 1:
+            mask = (y_prob >= left) & (y_prob <= right)
+        else:
+            mask = (y_prob >= left) & (y_prob < right)
+        if not np.any(mask):
+            continue
+        acc = y_true[mask].mean()
+        conf = y_prob[mask].mean()
+        ece += np.abs(acc - conf) * (mask.sum() / max(n, 1))
+    return float(ece)
+
+
+def _joint_name_from_pred(g, s):
+    idx = JOINT_LABEL_TO_INDEX.get((int(g), int(s)))
+    if idx is None:
+        return "INV"
+    return f"{int(g)}{int(s)}"
+
+
+def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False):
+    y_grade = np.asarray(y_grade)
+    y_stage = np.asarray(y_stage)
+    p_ge_grade = np.asarray(p_ge_grade)
+    p_ge_stage = np.asarray(p_ge_stage)
+    grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
+    stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
+    pG = ordinal_probs_to_class_probs(p_ge_grade)
+    pS = ordinal_probs_to_class_probs(p_ge_stage)
+    grade_pred = pG.argmax(axis=1)
+    stage_pred = pS.argmax(axis=1)
+
+    prob_grade_any = 1.0 - pG[:, 0]
+    prob_stage_any = 1.0 - pS[:, 0]
+
+    metrics = {}
+    metrics["MAE_grade"] = float(np.mean(np.abs(grade_pred - grades_true)))
+    metrics["MAE_stage"] = float(np.mean(np.abs(stage_pred - stages_true)))
+    from sklearn.metrics import cohen_kappa_score
+    metrics["QWK_grade"] = float(cohen_kappa_score(grades_true, grade_pred, weights="quadratic"))
+    metrics["QWK_stage"] = float(cohen_kappa_score(stages_true, stage_pred, weights="quadratic"))
+
+    metrics["AUROC_grade_any_htn"] = safe_roc_auc((grades_true > 0).astype(int), prob_grade_any)
+    metrics["AUROC_grade_ge1"] = safe_roc_auc((grades_true >= 1).astype(int), p_ge_grade[:, 0])
+    metrics["AUROC_grade_ge2"] = safe_roc_auc((grades_true >= 2).astype(int), p_ge_grade[:, 1])
+    metrics["AUROC_grade_ge3"] = safe_roc_auc((grades_true >= 3).astype(int), p_ge_grade[:, 2])
+
+    metrics["AUROC_stage_any_htn"] = safe_roc_auc((stages_true > 0).astype(int), prob_stage_any)
+    metrics["AUROC_stage_ge1"] = safe_roc_auc((stages_true >= 1).astype(int), p_ge_stage[:, 0])
+    metrics["AUROC_stage_ge2"] = safe_roc_auc((stages_true >= 2).astype(int), p_ge_stage[:, 1])
+
+    _plot_roc_curve((grades_true > 0).astype(int), prob_grade_any, "ROC grade any HTN", os.path.join(output_dir, "roc_grade_any_htn.png"))
+    _plot_roc_comparison([
+        ("grade>=1", (grades_true >= 1).astype(int), p_ge_grade[:, 0]),
+        ("grade>=2", (grades_true >= 2).astype(int), p_ge_grade[:, 1]),
+        ("grade>=3", (grades_true >= 3).astype(int), p_ge_grade[:, 2]),
+    ], "ROC Grade Comparison", os.path.join(output_dir, "roc_grade_comparison.png"))
+    cm_grade = confusion_matrix(grades_true, grade_pred, labels=[0, 1, 2, 3])
+    _plot_confusion_matrix(cm_grade, ["0", "1", "2", "3"], "Grade Confmat", os.path.join(output_dir, "Confmat_grade.png"))
+
+    _plot_roc_curve((stages_true > 0).astype(int), prob_stage_any, "ROC stage any HTN", os.path.join(output_dir, "roc_stage_any_htn.png"))
+    _plot_roc_comparison([
+        ("stage>=1", (stages_true >= 1).astype(int), p_ge_stage[:, 0]),
+        ("stage>=2", (stages_true >= 2).astype(int), p_ge_stage[:, 1]),
+    ], "ROC Stage Comparison", os.path.join(output_dir, "roc_stage_comparison.png"))
+    cm_stage = confusion_matrix(stages_true, stage_pred, labels=[0, 1, 2])
+    _plot_confusion_matrix(cm_stage, ["0", "1", "2"], "Stage Confmat", os.path.join(output_dir, "Confmat_stage.png"))
+
+    y_any_grade = (grades_true > 0).astype(int)
+    _plot_calibration_curve(
+        y_any_grade,
+        prob_grade_any,
+        "Calibration any HTN (grade)",
+        os.path.join(output_dir, "calib_any_htn_grade.png"),
+        n_bins=10,
+    )
+    metrics["ECE"] = expected_calibration_error(y_any_grade, prob_grade_any, n_bins=10)
+    metrics["Brier"] = float(brier_score_loss(y_any_grade, prob_grade_any)) if len(np.unique(y_any_grade)) >= 2 else np.nan
+
+    y_any_stage = (stages_true > 0).astype(int)
+    _plot_calibration_curve(
+        y_any_stage,
+        prob_stage_any,
+        "Calibration any HTN (stage)",
+        os.path.join(output_dir, "calib_any_htn_stage.png"),
+        n_bins=10,
+    )
+    metrics["ECE_stage"] = expected_calibration_error(y_any_stage, prob_stage_any, n_bins=10)
+    metrics["Brier_stage"] = float(brier_score_loss(y_any_stage, prob_stage_any)) if len(np.unique(y_any_stage)) >= 2 else np.nan
+
+    joint_gt_name = [_joint_name_from_pred(g, s) for g, s in zip(grades_true, stages_true)]
+    joint_pred_name = [_joint_name_from_pred(g, s) for g, s in zip(grade_pred, stage_pred)]
+    invalid_flag = np.array([v == "INV" for v in joint_pred_name])
+    invalid_type = [f"g{g}_s{s}" if inv else "" for g, s, inv in zip(grade_pred, stage_pred, invalid_flag)]
+    metrics["invalid_rate"] = float(invalid_flag.mean()) if len(invalid_flag) > 0 else np.nan
+
+    labels7 = ["00", "11", "12", "21", "22", "32", "INV"]
+    map7 = {k: i for i, k in enumerate(labels7)}
+    y7 = np.array([map7.get(v, 6) for v in joint_gt_name])
+    p7 = np.array([map7.get(v, 6) for v in joint_pred_name])
+    cm7 = confusion_matrix(y7, p7, labels=list(range(7)))
+    _plot_confusion_matrix(cm7, labels7, "Grade+Stage Confmat", os.path.join(output_dir, "Confmat_grade_stage.png"))
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    cnt = {}
+    for t in invalid_type:
+        if t:
+            cnt[t] = cnt.get(t, 0) + 1
+    fig, ax = plt.subplots(figsize=(6, 4))
+    if cnt:
+        ks = list(cnt.keys())
+        vs = [cnt[k] for k in ks]
+        ax.bar(ks, vs)
+        ax.tick_params(axis='x', rotation=45)
+    ax.set_title("Invalid type histogram")
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, "invalid_type_hist.png"), dpi=200)
+    plt.close(fig)
+
+    rows = []
+    for i in range(len(grades_true)):
+        rows.append({
+            "Path": path_list[i] if path_list is not None and i < len(path_list) else "",
+            "grade_gt": int(grades_true[i]),
+            "stage_gt": int(stages_true[i]),
+            "grade_pred": int(grade_pred[i]),
+            "stage_pred": int(stage_pred[i]),
+            "prob_grade_any_htn": float(prob_grade_any[i]),
+            "prob_stage_any_htn": float(prob_stage_any[i]),
+            "joint_gt": joint_gt_name[i],
+            "joint_pred": joint_pred_name[i],
+            "invalid_flag": int(invalid_flag[i]),
+            "invalid_type": invalid_type[i],
+            "p_grade_ge1": float(p_ge_grade[i, 0]),
+            "p_grade_ge2": float(p_ge_grade[i, 1]),
+            "p_grade_ge3": float(p_ge_grade[i, 2]),
+            "p_stage_ge1": float(p_ge_stage[i, 0]),
+            "p_stage_ge2": float(p_ge_stage[i, 1]),
+        })
+
+    report_lines = [
+        "[sep_v1 test summary]",
+        f"N={len(grades_true)}",
+        "",
+        "[scalar metrics]",
+        f"MAE_grade={metrics['MAE_grade']:.6f}",
+        f"QWK_grade={metrics['QWK_grade']:.6f}",
+        f"MAE_stage={metrics['MAE_stage']:.6f}",
+        f"QWK_stage={metrics['QWK_stage']:.6f}",
+        f"AUROC_grade_any_htn={metrics['AUROC_grade_any_htn']}",
+        f"AUROC_grade_ge1={metrics['AUROC_grade_ge1']}",
+        f"AUROC_grade_ge2={metrics['AUROC_grade_ge2']}",
+        f"AUROC_grade_ge3={metrics['AUROC_grade_ge3']}",
+        f"AUROC_stage_any_htn={metrics['AUROC_stage_any_htn']}",
+        f"AUROC_stage_ge1={metrics['AUROC_stage_ge1']}",
+        f"AUROC_stage_ge2={metrics['AUROC_stage_ge2']}",
+        f"ECE_grade_any_htn={metrics['ECE']}",
+        f"Brier_grade_any_htn={metrics['Brier']}",
+        f"ECE_stage_any_htn={metrics['ECE_stage']}",
+        f"Brier_stage_any_htn={metrics['Brier_stage']}",
+        f"invalid_rate={metrics['invalid_rate']}",
+        "",
+        "[Confmat_grade labels=0,1,2,3]",
+        np.array2string(cm_grade, separator=', '),
+        "",
+        "[Confmat_stage labels=0,1,2]",
+        np.array2string(cm_stage, separator=', '),
+        "",
+        "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]",
+        np.array2string(cm7, separator=', '),
+        "",
+        "[invalid_type_count]",
+        json.dumps(cnt, ensure_ascii=False, sort_keys=True),
+        "",
+        "[generated_figures]",
+        "roc_grade_any_htn.png",
+        "roc_grade_comparison.png",
+        "Confmat_grade.png",
+        "roc_stage_any_htn.png",
+        "roc_stage_comparison.png",
+        "Confmat_stage.png",
+        "calib_any_htn_grade.png",
+        "calib_any_htn_stage.png",
+        "Confmat_grade_stage.png",
+        "invalid_type_hist.png",
+    ]
+
+    return metrics, rows, report_lines
+
 def save_thresholds_json(path, thresholds):
     # 将 numpy 标量转换为 Python float，避免 json 序列化报错
     def _to_float_dict(d):

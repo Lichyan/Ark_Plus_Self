@@ -14,7 +14,7 @@ import numpy as np
 import pydicom as dicom
 import cv2
 from skimage import transform, io, img_as_float, exposure
-from utils import JOINT_LABEL_TO_INDEX
+from utils import JOINT_LABELS, JOINT_LABEL_TO_INDEX
 from albumentations import (
     Compose, HorizontalFlip, CLAHE, HueSaturationValue,
     RandomBrightness, RandomBrightnessContrast, RandomGamma,OneOf,
@@ -1129,6 +1129,125 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
                 "path": img_path,
             },
         }
+        return img, target
+
+    def __len__(self):
+        return len(self.img_list)
+
+
+class advCheX_hyp_multi_grade_stage_sep_v1(Dataset):
+    """高血压分级+分层分离训练：共享encoder，仅 grade/stage 两个ordinal头。"""
+
+    def __init__(self, images_path, file_path, augment, few_shot=-1):
+        self.img_list = []
+        self.grade_labels = []
+        self.stage_labels = []
+        self.grade_list = []
+        self.stage_list = []
+        self.augment = augment
+
+        grade_counts = np.zeros(4, dtype=np.int64)
+        stage_counts = np.zeros(3, dtype=np.int64)
+        joint_counts = {f"{g}{s}": 0 for g, s in JOINT_LABELS}
+        invalid_counts = {}
+
+        with open(file_path, "r") as f:
+            csv_reader = csv.reader(f)
+            header = next(csv_reader, None)
+            if header is None:
+                raise ValueError(f"空CSV文件: {file_path}")
+            hmap = {h.strip().lower(): i for i, h in enumerate(header)}
+            if "path" not in hmap or "grade" not in hmap or "stage" not in hmap:
+                raise ValueError(f"CSV必须包含Path/grade/stage列，当前header={header}")
+            path_idx = hmap["path"]
+            grade_idx = hmap["grade"]
+            stage_idx = hmap["stage"]
+
+            for line in csv_reader:
+                if len(line) <= max(path_idx, grade_idx, stage_idx):
+                    continue
+                img_rel_path = line[path_idx]
+                grade = int(line[grade_idx])
+                stage = int(line[stage_idx])
+
+                if grade < 0 or grade > 3 or stage < 0 or stage > 2:
+                    continue
+
+                grade_counts[grade] += 1
+                stage_counts[stage] += 1
+                if (grade, stage) in JOINT_LABEL_TO_INDEX:
+                    joint_counts[f"{grade}{stage}"] += 1
+                else:
+                    key = f"g{grade}_s{stage}"
+                    invalid_counts[key] = invalid_counts.get(key, 0) + 1
+
+                img_abs_path = os.path.join(images_path, img_rel_path)
+                y_grade = [1 if grade >= k else 0 for k in [1, 2, 3]]
+                y_stage = [1 if stage >= k else 0 for k in [1, 2]]
+                self.img_list.append(img_abs_path)
+                self.grade_labels.append(y_grade)
+                self.stage_labels.append(y_stage)
+                self.grade_list.append(grade)
+                self.stage_list.append(stage)
+
+        print(f"[advCheX_hyp_multi_grade_stage_sep_v1] N={len(self.img_list)}", flush=True)
+        print(f"[advCheX_hyp_multi_grade_stage_sep_v1] grade_dist={grade_counts.tolist()}", flush=True)
+        print(f"[advCheX_hyp_multi_grade_stage_sep_v1] stage_dist={stage_counts.tolist()}", flush=True)
+        print(f"[advCheX_hyp_multi_grade_stage_sep_v1] joint6_dist={joint_counts}", flush=True)
+        print(
+            f"[advCheX_hyp_multi_grade_stage_sep_v1] invalid_joint_count={int(sum(invalid_counts.values()))} details={invalid_counts}",
+            flush=True,
+        )
+
+        if few_shot > 0:
+            indexes = np.arange(len(self.img_list))
+            random.Random(99).shuffle(indexes)
+            num_data = int(len(indexes) * few_shot) if few_shot < 1 else int(few_shot)
+            indexes = indexes[:num_data]
+            _img_list = copy.deepcopy(self.img_list)
+            _grade_labels = copy.deepcopy(self.grade_labels)
+            _stage_labels = copy.deepcopy(self.stage_labels)
+            _grade_list = copy.deepcopy(self.grade_list)
+            _stage_list = copy.deepcopy(self.stage_list)
+            self.img_list = [_img_list[i] for i in indexes]
+            self.grade_labels = [_grade_labels[i] for i in indexes]
+            self.stage_labels = [_stage_labels[i] for i in indexes]
+            self.grade_list = [_grade_list[i] for i in indexes]
+            self.stage_list = [_stage_list[i] for i in indexes]
+            print(f"少样本模式：选取 {len(self.img_list)} 条数据（总{len(_img_list)}）")
+
+    def __getitem__(self, index):
+        img_path = self.img_list[index]
+        y_grade = self.grade_labels[index]
+        y_stage = self.stage_labels[index]
+        grade = self.grade_list[index]
+        stage = self.stage_list[index]
+        try:
+            img = Image.open(img_path).convert('RGB')
+            _ = img.size
+        except Exception as e:
+            print(f"[IO ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+            return None, None
+        if self.augment is not None:
+            try:
+                img = self.augment(img)
+            except Exception as e:
+                print(f"[AUG ERROR] idx={index} path={img_path} err={repr(e)}", flush=True)
+                return None, None
+
+        target = {
+            "y_grade": torch.FloatTensor(y_grade),
+            "y_stage": torch.FloatTensor(y_stage),
+            "raw_grade": torch.tensor(int(grade), dtype=torch.long),
+            "raw_stage": torch.tensor(int(stage), dtype=torch.long),
+            "meta": {
+                "grade": int(grade),
+                "stage": int(stage),
+                "path": img_path,
+            },
+        }
+        if getattr(self, "return_path", False):
+            return img, target, img_path
         return img, target
 
     def __len__(self):

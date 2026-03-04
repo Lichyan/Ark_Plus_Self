@@ -233,7 +233,7 @@ def build_classification_model(args):
         print("Not provide {} pretrained weights for {}.".format(args.init, args.model_name))
         raise Exception("Please provide correct parameters to load the model!")
 
-    if getattr(args, "data_set", "") == "advCheX_hyp_multi_grade_stage_v1":
+    if getattr(args, "data_set", "") in {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1"}:
         model = MultiHeadOrdinalModel(
             backbone=model,
             num_class_grade=getattr(args, "num_class_grade", 3),
@@ -283,16 +283,16 @@ def _extract_backbone_features(backbone, x):
 
 
 class MultiHeadOrdinalModel(nn.Module):
-    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="default"):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral"):
         super().__init__()
         self.backbone = backbone
-        self.ordinal_mode = ordinal_mode
+        self.ordinal_mode = str(ordinal_mode).lower()
         feature_dim = getattr(backbone, "num_features", None)
         if feature_dim is None:
             feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
         if feature_dim is None:
             raise ValueError("无法推断 backbone 特征维度")
-        if ordinal_mode == "CORAL":
+        if self.ordinal_mode == "coral":
             self.head_grade = CoralHead(feature_dim, num_class_grade)
             self.head_stage = CoralHead(feature_dim, num_class_stage)
         else:
@@ -309,11 +309,26 @@ class MultiHeadOrdinalModel(nn.Module):
 class CoralHead(nn.Module):
     def __init__(self, in_features, num_thresholds):
         super().__init__()
-        self.weight = nn.Parameter(torch.zeros(in_features))
-        self.bias = nn.Parameter(torch.zeros(num_thresholds))
+        self.score = nn.Linear(in_features, 1)
+        self.t1 = nn.Parameter(torch.zeros(1))
+        self.delta = nn.Parameter(torch.zeros(max(num_thresholds - 1, 0)))
+        self.num_thresholds = num_thresholds
+
+    def ordered_bias(self):
+        if self.num_thresholds <= 1:
+            return self.t1
+        inc = torch.nn.functional.softplus(self.delta)
+        b = [self.t1]
+        run = self.t1
+        for i in range(len(inc)):
+            run = run + inc[i:i+1]
+            b.append(run)
+        return torch.cat(b, dim=0)
 
     def forward(self, x):
-        logits = x.matmul(self.weight)[:, None] + self.bias[None, :]
+        s = self.score(x)
+        b = self.ordered_bias()
+        logits = s - b[None, :]
         return logits
 
 def load_pretrained_weights(model, init, pretrained_weights, checkpoint_key=None, scale_up=False, keep_head=False):

@@ -160,7 +160,7 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         logits_grade, logits_stage = outputs
         y_grade = targets["y_grade"]
         y_stage = targets["y_stage"]
-        if self.ordinal_mode == "CORN":
+        if str(self.ordinal_mode).lower() == "corn":
             loss_grade = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
             loss_stage = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
         else:
@@ -173,7 +173,7 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         mean_p_joint_true = torch.tensor(0.0, device=loss.device)
         mean_neglog_p_joint_true = torch.tensor(0.0, device=loss.device)
         if self.use_joint_train and (self.lambda_incomp > 0 or self.lambda_joint > 0):
-            if self.ordinal_mode == "CORN":
+            if str(self.ordinal_mode).lower() == "corn":
                 q_g = torch.sigmoid(logits_grade)
                 q_s = torch.sigmoid(logits_stage)
                 ge_g = corn_marginal_ge_probs(q_g)
@@ -346,7 +346,7 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
             y_grade_all = torch.cat((y_grade_all, y_grade), 0)
             y_stage_all = torch.cat((y_stage_all, y_stage), 0)
             logits_grade, logits_stage = model(samples)
-            if ordinal_mode == "CORN":
+            if str(ordinal_mode).lower() == "corn":
                 q_grade = torch.sigmoid(logits_grade)
                 q_stage = torch.sigmoid(logits_stage)
                 p_grade = corn_marginal_ge_probs(q_grade)
@@ -408,7 +408,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -474,9 +474,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           pos_weight_stage=pos_weight_stage,
           w_grade=getattr(args, "loss_w_grade", 1.0),
           w_stage=getattr(args, "loss_w_stage", 1.0),
-          use_joint_train=getattr(args, "use_joint_train", False),
-          lambda_incomp=getattr(args, "lambda_incomp", 0.0),
-          lambda_joint=getattr(args, "lambda_joint", 0.0),
+          use_joint_train=(getattr(args, "use_joint_train", False) if args.data_set != "advCheX_hyp_multi_grade_stage_sep_v1" else False),
+          lambda_incomp=(getattr(args, "lambda_incomp", 0.0) if args.data_set != "advCheX_hyp_multi_grade_stage_sep_v1" else 0.0),
+          lambda_joint=(getattr(args, "lambda_joint", 0.0) if args.data_set != "advCheX_hyp_multi_grade_stage_sep_v1" else 0.0),
           joint_gate=getattr(args, "joint_gate", "htn_only"),
           joint_detach=getattr(args, "joint_detach", "both"),
           joint_ce_weight=joint_ce_weight,
@@ -485,7 +485,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           joint_loss_use_prior=getattr(args, "joint_loss_use_prior", False),
           joint_prior=joint_prior,
           joint_prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
-          ordinal_mode=getattr(args, "ordinal_mode", "default"),
+          ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
         )
         print(
           f"use MultiHeadOrdinalLoss, pos_weight_grade={pos_weight_grade}, pos_weight_stage={pos_weight_stage}",
@@ -636,7 +636,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             prior=prior,
             prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
             softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
-            ordinal_mode=getattr(args, "ordinal_mode", "default"),
+            ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
           )
           val_joint = val_metrics.get("joint_exact_acc_pjoint")
           if val_joint is not None:
@@ -690,7 +690,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           grade_viol_ge2 = float(np.mean(p_grade_val[:, 1] > p_grade_val[:, 0])) if len(p_grade_val) > 0 else 0.0
           grade_viol_ge3 = float(np.mean(p_grade_val[:, 2] > p_grade_val[:, 1])) if len(p_grade_val) > 0 else 0.0
           stage_viol_ge2 = float(np.mean(p_stage_val[:, 1] > p_stage_val[:, 0])) if len(p_stage_val) > 0 else 0.0
-          if getattr(args, "ordinal_mode", "default") == "CORN":
+          if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
             grade_gap = np.stack(
               [p_grade_val[:, 0] - p_grade_val[:, 1], p_grade_val[:, 1] - p_grade_val[:, 2]],
               axis=1,
@@ -864,6 +864,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         use_cached = os.path.exists(pred_csv) and os.path.exists(gt_csv) and args.data_set not in {
           "advCheX_hyp_multi_level",
           "advCheX_hyp_multi_grade_stage_v1",
+        "advCheX_hyp_multi_grade_stage_sep_v1",
         }
         if use_cached:
           y_test = read_from_csv(gt_csv)
@@ -899,6 +900,24 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           y_stage = y_test["stage"].cpu().numpy() if isinstance(y_test, dict) else y_test
           p_grade = p_test["grade"].cpu().numpy() if isinstance(p_test, dict) else p_test
           p_stage = p_test["stage"].cpu().numpy() if isinstance(p_test, dict) else p_test
+
+          if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
+            output_dir = os.path.dirname(output_file)
+            metrics, pred_rows, report_lines = evaluate_grade_stage_sep(
+              y_grade, y_stage, p_grade, p_stage, output_dir=output_dir, path_list=path_list,
+              modethese=getattr(args, "modethese", False)
+            )
+            with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
+              if pred_rows:
+                writer_csv = csv.DictWriter(fcsv, fieldnames=list(pred_rows[0].keys()))
+                writer_csv.writeheader(); writer_csv.writerows(pred_rows)
+            with open(os.path.join(output_dir, "metrics.json"), 'w') as fm:
+              json.dump(metrics, fm, indent=2, ensure_ascii=False)
+            with open(os.path.join(output_dir, "result.txt"), 'w', encoding='utf-8') as fr:
+              fr.write("\n".join(report_lines) + "\n")
+            writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+            experiment = reader.readline()
+            continue
 
           if getattr(args, "test_time_adjust", False):
             grade_thresholds = compute_ordinal_thresholds(y_grade, p_grade).get("youden", grade_thresholds)
@@ -937,7 +956,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             prior=prior,
             prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
             softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
-            ordinal_mode=getattr(args, "ordinal_mode", "default"),
+            ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
           )
           if getattr(args, "modethese", False):
             grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
@@ -1097,6 +1116,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_stage_v1",
         "advCheX_hyp_multi_stage_v2",
         "advCheX_hyp_multi_grade_stage_v1",
+        "advCheX_hyp_multi_grade_stage_sep_v1",
       }:
         return
 
