@@ -903,9 +903,32 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
 
           if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
             output_dir = os.path.dirname(output_file)
+            val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
+            if str(getattr(args, "decodermode", "non")).lower() in {"threshold", "ev", "temp_threshold", "temp_ev"}:
+              if dataset_val is None:
+                raise ValueError("Decoder mode requires validation set for parameter search, but dataset_val is None.")
+              val_y_grade, val_y_stage, val_p_grade, val_p_stage = _collect_outputs_multi(
+                model, DataLoader(dataset=dataset_val, batch_size=int(args.batch_size/2), shuffle=False,
+                                  num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False),
+                device,
+                ordinal_mode=getattr(args, "ordinal_mode", "default"),
+              )
             metrics, pred_rows, report_lines = evaluate_grade_stage_sep(
               y_grade, y_stage, p_grade, p_stage, output_dir=output_dir, path_list=path_list,
-              modethese=getattr(args, "modethese", False)
+              modethese=getattr(args, "modethese", False),
+              decodermode=getattr(args, "decodermode", "non"),
+              decoder_objective=getattr(args, "decoder_objective", "qwk"),
+              decoder_bins=getattr(args, "decoder_bins", 101),
+              decoder_use_saved_thresholds=getattr(args, "decoder_use_saved_thresholds", True),
+              decoder_save_debug=getattr(args, "decoder_save_debug", True),
+              temperature_init=getattr(args, "temperature_init", 1.0),
+              temperature_min=getattr(args, "temperature_min", 0.5),
+              temperature_max=getattr(args, "temperature_max", 5.0),
+              temperature_grid_size=getattr(args, "temperature_grid_size", 91),
+              decoder_keep_raw_metrics=getattr(args, "decoder_keep_raw_metrics", True),
+              thresholds_src=thresholds_src,
+              val_y_grade=val_y_grade, val_y_stage=val_y_stage,
+              val_p_ge_grade=val_p_grade, val_p_ge_stage=val_p_stage,
             )
             with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
               if pred_rows:
