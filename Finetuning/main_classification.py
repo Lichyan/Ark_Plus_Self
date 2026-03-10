@@ -169,6 +169,19 @@ def get_args_parser():
     parser.add_option("--modethese", dest="modethese", help="enable extended metrics/figures for论文需求", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
+    parser.add_option("--decodermode", dest="decodermode", help="non|threshold|ev|temp_threshold|temp_ev", default="non", type="string")
+    parser.add_option("--decoder_objective", dest="decoder_objective", help="qwk|macro_f1|balanced_acc|mid_recall|composite", default="qwk", type="string")
+    parser.add_option("--decoder_bins", dest="decoder_bins", help="grid bins for decoder search", default=101, type="int")
+    parser.add_option("--decoder_use_saved_thresholds", dest="decoder_use_saved_thresholds", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--decoder_save_debug", dest="decoder_save_debug", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--temperature_init", dest="temperature_init", default=1.0, type="float")
+    parser.add_option("--temperature_min", dest="temperature_min", default=0.5, type="float")
+    parser.add_option("--temperature_max", dest="temperature_max", default=5.0, type="float")
+    parser.add_option("--temperature_grid_size", dest="temperature_grid_size", default=91, type="int")
+    parser.add_option("--decoder_keep_raw_metrics", dest="decoder_keep_raw_metrics", default=True,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
