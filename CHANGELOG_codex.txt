@@ -1,4 +1,8 @@
 [2026-03-10] -codex
+Reason: 修复 sep_v1 在 test+decodermode!=non 的验证集重搜路径中引用未定义 model 导致 UnboundLocalError。
+Changes: 按 test 推理统一路径改造 val 预测收集：在 decoder 需要 val 时新增 data_loader_val_for_decoder，并复用 test_classification(saved_model, data_loader, ...) 获取 val 的 grade/stage 预测用于阈值/EV/温度搜索；non 模式与其他数据集分支不变。
+
+[2026-03-10] -codex
 Reason: 修复 sep_v1 在 test 模式下 decodermode!=non 时因 dataset_val 未构建导致无法执行阈值/EV/温度相关解码流程。
 Changes: advCheX_hyp_multi_grade_stage_sep_v1 数据集构建逻辑调整为：只要 decodermode!=non（即使 mode=test）也构建 dataset_val；decodermode=non 仍保持原 test 行为不构建 val，避免影响既有非 decoder 测试路径。
 

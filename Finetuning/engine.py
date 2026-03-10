@@ -914,12 +914,28 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 if decoder_mode == "threshold":
                   raise ValueError("Decoder mode=threshold: 未找到可用已保存阈值且 dataset_val is None，无法在验证集重搜。")
                 raise ValueError(f"Decoder mode={decoder_mode} requires validation set for parameter search, but dataset_val is None.")
-              val_y_grade, val_y_stage, val_p_grade, val_p_stage = _collect_outputs_multi(
-                model, DataLoader(dataset=dataset_val, batch_size=int(args.batch_size/2), shuffle=False,
-                                  num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False),
-                device,
-                ordinal_mode=getattr(args, "ordinal_mode", "default"),
+
+              data_loader_val_for_decoder = DataLoader(
+                dataset=dataset_val,
+                batch_size=int(args.batch_size/2),
+                shuffle=False,
+                num_workers=args.workers,
+                pin_memory=True,
+                collate_fn=safe_collate,
+                persistent_workers=False,
               )
+              val_out = test_classification(saved_model, data_loader_val_for_decoder, device, args)
+              if isinstance(val_out, tuple) and len(val_out) == 3:
+                y_val_pred, p_val_pred, _ = val_out
+              else:
+                y_val_pred, p_val_pred = val_out
+              if isinstance(y_val_pred, dict):
+                val_y_grade = y_val_pred["grade"].cpu().numpy()
+                val_y_stage = y_val_pred["stage"].cpu().numpy()
+                val_p_grade = p_val_pred["grade"].cpu().numpy()
+                val_p_stage = p_val_pred["stage"].cpu().numpy()
+              else:
+                raise ValueError("Expected multi-head dict outputs on validation decoder pass, but got non-dict outputs.")
             metrics, pred_rows, report_lines = evaluate_grade_stage_sep(
               y_grade, y_stage, p_grade, p_stage, output_dir=output_dir, path_list=path_list,
               modethese=getattr(args, "modethese", False),
