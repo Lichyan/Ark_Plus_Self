@@ -632,6 +632,7 @@ def main(args):
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         label_names = ["grade>=1", "grade>=2", "grade>=3", "stage>=1", "stage>=2"]
+        need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
         if args.mode == "train":
             dataset_train = advCheX_hyp_multi_grade_stage_sep_v1(
                 images_path=args.data_dir,
@@ -644,6 +645,10 @@ def main(args):
                 ),
                 few_shot=args.few_shot,
             )
+        else:
+            dataset_train = None
+
+        if args.mode == "train" or need_decoder_val:
             dataset_val = advCheX_hyp_multi_grade_stage_sep_v1(
                 images_path=args.data_dir,
                 file_path=args.val_list,
@@ -655,7 +660,6 @@ def main(args):
                 ),
             )
         else:
-            dataset_train = None
             dataset_val = None
 
         dataset_test = advCheX_hyp_multi_grade_stage_sep_v1(

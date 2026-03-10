@@ -1,4 +1,8 @@
 [2026-03-10] -codex
+Reason: 修复 sep_v1 在 test 模式下 decodermode!=non 时因 dataset_val 未构建导致无法执行阈值/EV/温度相关解码流程。
+Changes: advCheX_hyp_multi_grade_stage_sep_v1 数据集构建逻辑调整为：只要 decodermode!=non（即使 mode=test）也构建 dataset_val；decodermode=non 仍保持原 test 行为不构建 val，避免影响既有非 decoder 测试路径。
+
+[2026-03-10] -codex
 Reason: 修复 sep_v1 test+decodermode 路径中 helper 以私有名（下划线开头）跨模块调用导致 NameError。
 Changes: 将 saved-threshold 解析 helper 改为公开函数 `extract_saved_thresholds_for_sep` 并同步 engine/utils 调用；保留旧私有名别名以兼容历史内部引用，避免再次出现导入可见性问题。
 
