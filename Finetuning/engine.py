@@ -904,9 +904,16 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
-            if str(getattr(args, "decodermode", "non")).lower() in {"threshold", "ev", "temp_threshold", "temp_ev"}:
+            decoder_mode = str(getattr(args, "decodermode", "non")).lower()
+            need_val_for_decoder = decoder_mode in {"ev", "temp_threshold", "temp_ev"}
+            if decoder_mode == "threshold":
+              saved_thr_grade, saved_thr_stage = _extract_saved_thresholds_for_sep(thresholds_src) if getattr(args, "decoder_use_saved_thresholds", True) else (None, None)
+              need_val_for_decoder = not (saved_thr_grade is not None and saved_thr_stage is not None)
+            if need_val_for_decoder:
               if dataset_val is None:
-                raise ValueError("Decoder mode requires validation set for parameter search, but dataset_val is None.")
+                if decoder_mode == "threshold":
+                  raise ValueError("Decoder mode=threshold: 未找到可用已保存阈值且 dataset_val is None，无法在验证集重搜。")
+                raise ValueError(f"Decoder mode={decoder_mode} requires validation set for parameter search, but dataset_val is None.")
               val_y_grade, val_y_stage, val_p_grade, val_p_stage = _collect_outputs_multi(
                 model, DataLoader(dataset=dataset_val, batch_size=int(args.batch_size/2), shuffle=False,
                                   num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False),

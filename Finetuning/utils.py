@@ -1152,6 +1152,23 @@ def _apply_temp(p_ge, temp):
     return 1.0 / (1.0 + np.exp(-(logits / temp)))
 
 
+def _extract_saved_thresholds_for_sep(thresholds_src):
+    if not isinstance(thresholds_src, dict):
+        return None, None
+    gsrc = thresholds_src.get("grade") if isinstance(thresholds_src.get("grade"), dict) else None
+    ssrc = thresholds_src.get("stage") if isinstance(thresholds_src.get("stage"), dict) else None
+    if not (gsrc and ssrc):
+        return None, None
+    gobj = gsrc.get("youden", gsrc) if isinstance(gsrc.get("youden", gsrc), dict) else gsrc
+    sobj = ssrc.get("youden", ssrc) if isinstance(ssrc.get("youden", ssrc), dict) else ssrc
+    keys_ok = all(k in gobj for k in ["ge1", "ge2", "ge3"]) and all(k in sobj for k in ["ge1", "ge2"])
+    if not keys_ok:
+        return None, None
+    thr_grade = [float(gobj["ge1"]), float(gobj["ge2"]), float(gobj["ge3"])]
+    thr_stage = [float(sobj["ge1"]), float(sobj["ge2"])]
+    return thr_grade, thr_stage
+
+
 def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False,
                              decodermode="non", decoder_objective="qwk", decoder_bins=101,
                              decoder_use_saved_thresholds=True, decoder_save_debug=True,
@@ -1172,9 +1189,24 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     stage_pred = stage_pred_raw.copy()
 
     mode = str(decodermode or "non").lower()
-    need_val = mode in {"threshold", "ev", "temp_threshold", "temp_ev"}
-    if need_val and (val_y_grade is None or val_y_stage is None or val_p_ge_grade is None or val_p_ge_stage is None):
-        raise ValueError("Decoder mode requires validation predictions for parameter search. Please provide valid --val_list.")
+    saved_thr_grade, saved_thr_stage = _extract_saved_thresholds_for_sep(thresholds_src) if decoder_use_saved_thresholds else (None, None)
+    has_complete_saved_thresholds = (saved_thr_grade is not None and saved_thr_stage is not None)
+
+    need_val = mode in {"ev", "temp_threshold", "temp_ev"}
+    if mode == "threshold":
+        need_val = not has_complete_saved_thresholds
+
+    missing_val = (val_y_grade is None or val_y_stage is None or val_p_ge_grade is None or val_p_ge_stage is None)
+    if need_val and missing_val:
+        if mode == "threshold" and decoder_use_saved_thresholds and not has_complete_saved_thresholds:
+            raise ValueError(
+                "Decoder mode=threshold: 未找到可用的已保存阈值（grade.ge1/2/3, stage.ge1/2），且当前无法使用验证集重搜；"
+                "请提供有效 --val_list，或提供完整 _thresholds.json，或改用 --decodermode non。"
+            )
+        raise ValueError(
+            f"Decoder mode={mode} requires validation predictions for parameter search. "
+            "Please provide valid --val_list (dataset_val must be available in test flow)."
+        )
 
     used_saved = False
     val_used = False
@@ -1198,18 +1230,10 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
         val_used = True
 
     if mode in {"threshold", "temp_threshold"}:
-        thr_grade = thr_stage = None
-        if decoder_use_saved_thresholds and isinstance(thresholds_src, dict):
-            gsrc = thresholds_src.get("grade") if isinstance(thresholds_src.get("grade"), dict) else None
-            ssrc = thresholds_src.get("stage") if isinstance(thresholds_src.get("stage"), dict) else None
-            if gsrc and ssrc:
-                gobj = gsrc.get("youden", gsrc) if isinstance(gsrc.get("youden", gsrc), dict) else gsrc
-                sobj = ssrc.get("youden", ssrc) if isinstance(ssrc.get("youden", ssrc), dict) else ssrc
-                keys_ok = all(k in gobj for k in ["ge1", "ge2", "ge3"]) and all(k in sobj for k in ["ge1", "ge2"])
-                if keys_ok:
-                    thr_grade = [float(gobj["ge1"]), float(gobj["ge2"]), float(gobj["ge3"])]
-                    thr_stage = [float(sobj["ge1"]), float(sobj["ge2"])]
-                    used_saved = True
+        thr_grade = saved_thr_grade if decoder_use_saved_thresholds else None
+        thr_stage = saved_thr_stage if decoder_use_saved_thresholds else None
+        if thr_grade is not None and thr_stage is not None:
+            used_saved = True
         if thr_grade is None or thr_stage is None:
             val_grade_true = np.array([ordinal_targets_to_grade(row) for row in val_y_grade])
             val_stage_true = np.array([ordinal_targets_to_grade(row) for row in val_y_stage])

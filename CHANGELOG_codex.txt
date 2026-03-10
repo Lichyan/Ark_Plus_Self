@@ -1,4 +1,8 @@
 [2026-03-09] -codex
+Reason: 修复 sep_v1 在 test+decodermode=threshold 时即使可用已保存阈值仍强制依赖验证集，导致历史模型测试报错中断。
+Changes: decoder 流程增加“完整 saved thresholds 可直接解码”分支：threshold 模式仅在阈值缺失时才要求 val 搜索；并细化错误信息区分“阈值缺失 + 无 val”与“ev/temp_* 必须依赖 val”的场景，避免误导。
+
+[2026-03-09] -codex
 Reason: 为 sep_v1 评估增加可切换 decoder（non/threshold/ev/temp_*），并确保最终类别可由 decoder 接管且保留 raw/final 对照。
 Changes: 新增 decodermode 与 decoder_objective/decoder_bins/temperature_* 等参数；sep_v1 评估接入阈值/EV/温度搜索、raw/final 并行输出、metrics/result/predictions 扩展字段及 decoder 调试文件（decoder_config.json、decoder_search_summary.json、raw_vs_final_metrics.json）；测试引擎增加验证集输出收集以支持 decoder 参数搜索。
 
