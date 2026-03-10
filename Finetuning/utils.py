@@ -1152,7 +1152,7 @@ def _apply_temp(p_ge, temp):
     return 1.0 / (1.0 + np.exp(-(logits / temp)))
 
 
-def _extract_saved_thresholds_for_sep(thresholds_src):
+def extract_saved_thresholds_for_sep(thresholds_src):
     if not isinstance(thresholds_src, dict):
         return None, None
     gsrc = thresholds_src.get("grade") if isinstance(thresholds_src.get("grade"), dict) else None
@@ -1167,6 +1167,11 @@ def _extract_saved_thresholds_for_sep(thresholds_src):
     thr_grade = [float(gobj["ge1"]), float(gobj["ge2"]), float(gobj["ge3"])]
     thr_stage = [float(sobj["ge1"]), float(sobj["ge2"])]
     return thr_grade, thr_stage
+
+
+def _extract_saved_thresholds_for_sep(thresholds_src):
+    # backward-compatible alias for older internal references
+    return extract_saved_thresholds_for_sep(thresholds_src)
 
 
 def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False,
@@ -1189,7 +1194,7 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     stage_pred = stage_pred_raw.copy()
 
     mode = str(decodermode or "non").lower()
-    saved_thr_grade, saved_thr_stage = _extract_saved_thresholds_for_sep(thresholds_src) if decoder_use_saved_thresholds else (None, None)
+    saved_thr_grade, saved_thr_stage = extract_saved_thresholds_for_sep(thresholds_src) if decoder_use_saved_thresholds else (None, None)
     has_complete_saved_thresholds = (saved_thr_grade is not None and saved_thr_stage is not None)
 
     need_val = mode in {"ev", "temp_threshold", "temp_ev"}

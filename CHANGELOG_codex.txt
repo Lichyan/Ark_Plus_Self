@@ -1,3 +1,7 @@
+[2026-03-10] -codex
+Reason: 修复 sep_v1 test+decodermode 路径中 helper 以私有名（下划线开头）跨模块调用导致 NameError。
+Changes: 将 saved-threshold 解析 helper 改为公开函数 `extract_saved_thresholds_for_sep` 并同步 engine/utils 调用；保留旧私有名别名以兼容历史内部引用，避免再次出现导入可见性问题。
+
 [2026-03-09] -codex
 Reason: 修复 sep_v1 在 test+decodermode=threshold 时即使可用已保存阈值仍强制依赖验证集，导致历史模型测试报错中断。
 Changes: decoder 流程增加“完整 saved thresholds 可直接解码”分支：threshold 模式仅在阈值缺失时才要求 val 搜索；并细化错误信息区分“阈值缺失 + 无 val”与“ev/temp_* 必须依赖 val”的场景，避免误导。

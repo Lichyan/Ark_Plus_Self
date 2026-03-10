@@ -907,7 +907,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
             need_val_for_decoder = decoder_mode in {"ev", "temp_threshold", "temp_ev"}
             if decoder_mode == "threshold":
-              saved_thr_grade, saved_thr_stage = _extract_saved_thresholds_for_sep(thresholds_src) if getattr(args, "decoder_use_saved_thresholds", True) else (None, None)
+              saved_thr_grade, saved_thr_stage = extract_saved_thresholds_for_sep(thresholds_src) if getattr(args, "decoder_use_saved_thresholds", True) else (None, None)
               need_val_for_decoder = not (saved_thr_grade is not None and saved_thr_stage is not None)
             if need_val_for_decoder:
               if dataset_val is None:
