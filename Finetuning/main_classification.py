@@ -169,6 +169,19 @@ def get_args_parser():
     parser.add_option("--modethese", dest="modethese", help="enable extended metrics/figures for论文需求", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
+    parser.add_option("--decodermode", dest="decodermode", help="non|threshold|ev|temp_threshold|temp_ev", default="non", type="string")
+    parser.add_option("--decoder_objective", dest="decoder_objective", help="qwk|macro_f1|balanced_acc|mid_recall|composite", default="qwk", type="string")
+    parser.add_option("--decoder_bins", dest="decoder_bins", help="grid bins for decoder search", default=101, type="int")
+    parser.add_option("--decoder_use_saved_thresholds", dest="decoder_use_saved_thresholds", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--decoder_save_debug", dest="decoder_save_debug", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--temperature_init", dest="temperature_init", default=1.0, type="float")
+    parser.add_option("--temperature_min", dest="temperature_min", default=0.5, type="float")
+    parser.add_option("--temperature_max", dest="temperature_max", default=5.0, type="float")
+    parser.add_option("--temperature_grid_size", dest="temperature_grid_size", default=91, type="int")
+    parser.add_option("--decoder_keep_raw_metrics", dest="decoder_keep_raw_metrics", default=True,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
@@ -619,6 +632,7 @@ def main(args):
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         label_names = ["grade>=1", "grade>=2", "grade>=3", "stage>=1", "stage>=2"]
+        need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
         if args.mode == "train":
             dataset_train = advCheX_hyp_multi_grade_stage_sep_v1(
                 images_path=args.data_dir,
@@ -631,6 +645,10 @@ def main(args):
                 ),
                 few_shot=args.few_shot,
             )
+        else:
+            dataset_train = None
+
+        if args.mode == "train" or need_decoder_val:
             dataset_val = advCheX_hyp_multi_grade_stage_sep_v1(
                 images_path=args.data_dir,
                 file_path=args.val_list,
@@ -642,7 +660,6 @@ def main(args):
                 ),
             )
         else:
-            dataset_train = None
             dataset_val = None
 
         dataset_test = advCheX_hyp_multi_grade_stage_sep_v1(
