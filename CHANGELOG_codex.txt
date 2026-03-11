@@ -1,4 +1,8 @@
 [2026-03-10] -codex
+Reason: 解决 sep_v1 在跨域评估（test-only 数据目录 + 独立 val CSV）时，decoder 重搜路径将 val 相对路径错误拼接到 test data_dir 的问题。
+Changes: 新增参数 --val_data_dir（默认 None）；在 advCheX_hyp_multi_grade_stage_sep_v1 中构建 dataset_val 时优先使用 val_data_dir 作为验证图片根目录，未提供则回退 data_dir；当 dataset_val 会被构建时打印 val_images_root 与 val_list 便于排查路径配置。
+
+[2026-03-10] -codex
 Reason: 修复 sep_v1 在 test+decodermode!=non 的验证集重搜路径中引用未定义 model 导致 UnboundLocalError。
 Changes: 按 test 推理统一路径改造 val 预测收集：在 decoder 需要 val 时新增 data_loader_val_for_decoder，并复用 test_classification(saved_model, data_loader, ...) 获取 val 的 grade/stage 预测用于阈值/EV/温度搜索；non 模式与其他数据集分支不变。
 

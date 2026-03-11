@@ -41,6 +41,8 @@ def get_args_parser():
                       default=None, type="string")
     parser.add_option("--val_list", dest="val_list", help="file for validating list",
                       default=None, type="string")
+    parser.add_option("--val_data_dir", dest="val_data_dir", help="optional root dir for validation images",
+                      default=None, type="string")
     parser.add_option("--test_list", dest="test_list", help="file for test list",
                       default=None, type="string")
     parser.add_option("--train_weights", dest="train_weights", help="optional sampling weight file for training", default=None, type="string")
@@ -648,9 +650,11 @@ def main(args):
         else:
             dataset_train = None
 
+        val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
         if args.mode == "train" or need_decoder_val:
+            print(f"[sep_v1] val_images_root={val_images_root}, val_list={args.val_list}", flush=True)
             dataset_val = advCheX_hyp_multi_grade_stage_sep_v1(
-                images_path=args.data_dir,
+                images_path=val_images_root,
                 file_path=args.val_list,
                 augment=build_transform_classification(
                     normalize=args.normalization,
