@@ -1,3 +1,27 @@
+[2026-03-10] -codex
+Reason: 解决 sep_v1 在跨域评估（test-only 数据目录 + 独立 val CSV）时，decoder 重搜路径将 val 相对路径错误拼接到 test data_dir 的问题。
+Changes: 新增参数 --val_data_dir（默认 None）；在 advCheX_hyp_multi_grade_stage_sep_v1 中构建 dataset_val 时优先使用 val_data_dir 作为验证图片根目录，未提供则回退 data_dir；当 dataset_val 会被构建时打印 val_images_root 与 val_list 便于排查路径配置。
+
+[2026-03-10] -codex
+Reason: 修复 sep_v1 在 test+decodermode!=non 的验证集重搜路径中引用未定义 model 导致 UnboundLocalError。
+Changes: 按 test 推理统一路径改造 val 预测收集：在 decoder 需要 val 时新增 data_loader_val_for_decoder，并复用 test_classification(saved_model, data_loader, ...) 获取 val 的 grade/stage 预测用于阈值/EV/温度搜索；non 模式与其他数据集分支不变。
+
+[2026-03-10] -codex
+Reason: 修复 sep_v1 在 test 模式下 decodermode!=non 时因 dataset_val 未构建导致无法执行阈值/EV/温度相关解码流程。
+Changes: advCheX_hyp_multi_grade_stage_sep_v1 数据集构建逻辑调整为：只要 decodermode!=non（即使 mode=test）也构建 dataset_val；decodermode=non 仍保持原 test 行为不构建 val，避免影响既有非 decoder 测试路径。
+
+[2026-03-10] -codex
+Reason: 修复 sep_v1 test+decodermode 路径中 helper 以私有名（下划线开头）跨模块调用导致 NameError。
+Changes: 将 saved-threshold 解析 helper 改为公开函数 `extract_saved_thresholds_for_sep` 并同步 engine/utils 调用；保留旧私有名别名以兼容历史内部引用，避免再次出现导入可见性问题。
+
+[2026-03-09] -codex
+Reason: 修复 sep_v1 在 test+decodermode=threshold 时即使可用已保存阈值仍强制依赖验证集，导致历史模型测试报错中断。
+Changes: decoder 流程增加“完整 saved thresholds 可直接解码”分支：threshold 模式仅在阈值缺失时才要求 val 搜索；并细化错误信息区分“阈值缺失 + 无 val”与“ev/temp_* 必须依赖 val”的场景，避免误导。
+
+[2026-03-09] -codex
+Reason: 为 sep_v1 评估增加可切换 decoder（non/threshold/ev/temp_*），并确保最终类别可由 decoder 接管且保留 raw/final 对照。
+Changes: 新增 decodermode 与 decoder_objective/decoder_bins/temperature_* 等参数；sep_v1 评估接入阈值/EV/温度搜索、raw/final 并行输出、metrics/result/predictions 扩展字段及 decoder 调试文件（decoder_config.json、decoder_search_summary.json、raw_vs_final_metrics.json）；测试引擎增加验证集输出收集以支持 decoder 参数搜索。
+
 [2026-03-04] -codex
 Reason: sep_v1 测试结果仅生成 PNG/JSON，不便直接与外部工具基于文本讨论；且缺少 stage any-HTN 的校准图输出。
 Changes: advCheX_hyp_multi_grade_stage_sep_v1 测试评估新增 result.txt 文本汇总（包含标量指标、grade/stage/joint 混淆矩阵文字版、invalid 类型计数与图文件清单）；补充 stage any-HTN 校准图 calib_any_htn_stage.png 及对应 ECE_stage/Brier_stage 指标输出，并保持原 predictions.csv/metrics.json 产物不变。
