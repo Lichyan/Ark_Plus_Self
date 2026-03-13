@@ -239,6 +239,7 @@ def build_classification_model(args):
             num_class_grade=getattr(args, "num_class_grade", 3),
             num_class_stage=getattr(args, "num_class_stage", 2),
             ordinal_mode=getattr(args, "ordinal_mode", "default"),
+            sep_head_mode=getattr(args, "sep_head_mode", "flat"),
         )
 
     if getattr(args, "use_lora", False):
@@ -283,24 +284,40 @@ def _extract_backbone_features(backbone, x):
 
 
 class MultiHeadOrdinalModel(nn.Module):
-    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral"):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral", sep_head_mode="flat"):
         super().__init__()
         self.backbone = backbone
         self.ordinal_mode = str(ordinal_mode).lower()
+        self.sep_head_mode = str(sep_head_mode).lower()
         feature_dim = getattr(backbone, "num_features", None)
         if feature_dim is None:
             feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
         if feature_dim is None:
             raise ValueError("无法推断 backbone 特征维度")
-        if self.ordinal_mode == "coral":
-            self.head_grade = CoralHead(feature_dim, num_class_grade)
-            self.head_stage = CoralHead(feature_dim, num_class_stage)
+
+        if self.sep_head_mode == "coarse_fine":
+            self.head_anyhtn = nn.Linear(feature_dim, 1)
+            self.head_grade_pos = nn.Linear(feature_dim, 2)
+            self.head_stage_pos = nn.Linear(feature_dim, 1)
         else:
-            self.head_grade = nn.Linear(feature_dim, num_class_grade)
-            self.head_stage = nn.Linear(feature_dim, num_class_stage)
+            if self.ordinal_mode == "coral":
+                self.head_grade = CoralHead(feature_dim, num_class_grade)
+                self.head_stage = CoralHead(feature_dim, num_class_stage)
+            else:
+                self.head_grade = nn.Linear(feature_dim, num_class_grade)
+                self.head_stage = nn.Linear(feature_dim, num_class_stage)
 
     def forward(self, x):
         feats = _extract_backbone_features(self.backbone, x)
+        if self.sep_head_mode == "coarse_fine":
+            logits_anyhtn = self.head_anyhtn(feats)
+            logits_grade_pos = self.head_grade_pos(feats)
+            logits_stage_pos = self.head_stage_pos(feats)
+            return {
+                "anyhtn": logits_anyhtn,
+                "grade_pos": logits_grade_pos,
+                "stage_pos": logits_stage_pos,
+            }
         logits_grade = self.head_grade(feats)
         logits_stage = self.head_stage(feats)
         return logits_grade, logits_stage

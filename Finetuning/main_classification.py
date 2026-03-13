@@ -184,6 +184,15 @@ def get_args_parser():
     parser.add_option("--temperature_grid_size", dest="temperature_grid_size", default=91, type="int")
     parser.add_option("--decoder_keep_raw_metrics", dest="decoder_keep_raw_metrics", default=True,
                       action="callback", callback=vararg_callback_bool)
+    parser.add_option("--sep_head_mode", dest="sep_head_mode", help="flat|coarse_fine", default="flat", type="string")
+    parser.add_option("--loss_w_anyhtn", dest="loss_w_anyhtn", help="coarse any-HTN loss weight", default=1.0, type="float")
+    parser.add_option("--pos_weight_anyhtn", dest="pos_weight_anyhtn", help="optional positive weight for any-HTN coarse head", default=None, type="string")
+    parser.add_option("--coarse_auc_loss_mode", dest="coarse_auc_loss_mode", help="none|pairwise_hinge|pairwise_logistic", default="none", type="string")
+    parser.add_option("--loss_w_anyhtn_auc", dest="loss_w_anyhtn_auc", help="coarse AUC-oriented loss alpha", default=0.0, type="float")
+    parser.add_option("--auc_margin", dest="auc_margin", help="margin for pairwise hinge AUC loss", default=1.0, type="float")
+    parser.add_option("--auc_pair_subsample", dest="auc_pair_subsample", help="max sampled positives/negatives per batch for pairwise AUC", default=256, type="int")
+    parser.add_option("--auc_loss_detach_probs", dest="auc_loss_detach_probs", help="detach coarse logits before AUC loss", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,

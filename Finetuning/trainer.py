@@ -137,6 +137,9 @@ def test_classification(checkpoint, data_loader_test, device, args):
   y_stage_test = torch.FloatTensor().cuda()
   p_grade_test = torch.FloatTensor().cuda()
   p_stage_test = torch.FloatTensor().cuda()
+  p_anyhtn_test = torch.FloatTensor().cuda()
+  p_grade_pos_test = torch.FloatTensor().cuda()
+  p_stage_pos_test = torch.FloatTensor().cuda()
   path_list = []
   printed = False
 
@@ -179,14 +182,32 @@ def test_classification(checkpoint, data_loader_test, device, args):
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         print('[DEBUG] first batch input  mean/std:',
               samples.mean().item(), samples.std().item(), flush=True)
-        if isinstance(out, tuple):
+        if isinstance(out, dict):
+          print('[DEBUG] first batch output mean/std:',
+                out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
+        elif isinstance(out, tuple):
           print('[DEBUG] first batch output mean/std:',
                 out[0].mean().item(), out[0].std().item(), flush=True)
         else:
           print('[DEBUG] first batch output mean/std:',
                 out.mean().item(), out.std().item(), flush=True)
         printed = True
-      if isinstance(out, tuple):
+      if isinstance(out, dict) and all(k in out for k in ["anyhtn", "grade_pos", "stage_pos"]):
+        pH = torch.sigmoid(out["anyhtn"])
+        a = corn_marginal_ge_probs(torch.sigmoid(out["grade_pos"]))
+        b = torch.sigmoid(out["stage_pos"])
+        out_grade = torch.cat([pH, pH * a[:, :1], pH * a[:, 1:2]], dim=1)
+        out_stage = torch.cat([pH, pH * b], dim=1)
+        out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
+        out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+        p_anyhtn_test = torch.cat((p_anyhtn_test, pH.view(bs, n_crops, -1).mean(1).data), 0)
+        gpos = torch.cat([1 - a[:, :1], a[:, :1] * (1 - a[:, 1:2]), a[:, 1:2]], dim=1)
+        p_grade_pos_test = torch.cat((p_grade_pos_test, gpos.view(bs, n_crops, -1).mean(1).data), 0)
+        spos = torch.cat([1 - b, b], dim=1)
+        p_stage_pos_test = torch.cat((p_stage_pos_test, spos.view(bs, n_crops, -1).mean(1).data), 0)
+      elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
           out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))
@@ -211,6 +232,10 @@ def test_classification(checkpoint, data_loader_test, device, args):
   if y_grade_test.numel() > 0:
     y_dict = {"grade": y_grade_test, "stage": y_stage_test}
     p_dict = {"grade": p_grade_test, "stage": p_stage_test}
+    if p_anyhtn_test.numel() > 0:
+      p_dict["anyhtn"] = p_anyhtn_test
+      p_dict["grade_pos_probs"] = p_grade_pos_test
+      p_dict["stage_pos_probs"] = p_stage_pos_test
     if path_list:
       return y_dict, p_dict, path_list
     return y_dict, p_dict
@@ -265,14 +290,27 @@ def test_model(model, data_loader_test, args):
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         print('[DEBUG] first batch input  mean/std:',
               samples.mean().item(), samples.std().item(), flush=True)
-        if isinstance(out, tuple):
+        if isinstance(out, dict):
+          print('[DEBUG] first batch output mean/std:',
+                out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
+        elif isinstance(out, tuple):
           print('[DEBUG] first batch output mean/std:',
                 out[0].mean().item(), out[0].std().item(), flush=True)
         else:
           print('[DEBUG] first batch output mean/std:',
                 out.mean().item(), out.std().item(), flush=True)
         printed = True
-      if isinstance(out, tuple):
+      if isinstance(out, dict) and all(k in out for k in ["anyhtn", "grade_pos", "stage_pos"]):
+        pH = torch.sigmoid(out["anyhtn"])
+        a = corn_marginal_ge_probs(torch.sigmoid(out["grade_pos"]))
+        b = torch.sigmoid(out["stage_pos"])
+        out_grade = torch.cat([pH, pH * a[:, :1], pH * a[:, 1:2]], dim=1)
+        out_stage = torch.cat([pH, pH * b], dim=1)
+        out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
+        out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+      elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
           out_grade = corn_marginal_ge_probs(torch.sigmoid(out_grade))

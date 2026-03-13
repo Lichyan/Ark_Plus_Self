@@ -1179,7 +1179,9 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
                              decoder_use_saved_thresholds=True, decoder_save_debug=True,
                              temperature_init=1.0, temperature_min=0.5, temperature_max=5.0, temperature_grid_size=91,
                              decoder_keep_raw_metrics=True, thresholds_src=None,
-                             val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None):
+                             val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None,
+                             sep_head_mode="flat", aux_scores=None, loss_w_anyhtn=1.0, pos_weight_anyhtn=None,
+                             coarse_auc_loss_mode="none", loss_w_anyhtn_auc=0.0, auc_margin=1.0, auc_pair_subsample=256):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
     p_ge_grade = np.asarray(p_ge_grade)
@@ -1309,6 +1311,23 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     invalid_type = [f"g{g}_s{s}" if inv else "" for g, s, inv in zip(grade_pred, stage_pred, invalid_flag)]
     invalid_type_raw = [f"g{g}_s{s}" if inv else "" for g, s, inv in zip(grade_pred_raw, stage_pred_raw, invalid_flag_raw)]
     metrics["invalid_rate"] = float(invalid_flag.mean()) if len(invalid_flag) > 0 else np.nan
+    metrics["sep_head_mode"] = str(sep_head_mode)
+    metrics["coarse_to_fine_enabled"] = bool(str(sep_head_mode).lower() == "coarse_fine")
+    metrics["loss_w_anyhtn"] = float(loss_w_anyhtn)
+    metrics["coarse_auc_loss_mode"] = str(coarse_auc_loss_mode)
+    metrics["loss_w_anyhtn_auc"] = float(loss_w_anyhtn_auc)
+    metrics["auc_margin"] = float(auc_margin)
+    metrics["auc_pair_subsample"] = int(auc_pair_subsample)
+    if pos_weight_anyhtn is not None:
+        metrics["pos_weight_anyhtn"] = pos_weight_anyhtn
+    if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
+        p_any = np.asarray(aux_scores["p_anyhtn_coarse"]).reshape(-1)
+        y_any = (grades_true > 0).astype(int)
+        metrics["AUROC_anyhtn_coarse"] = safe_roc_auc(y_any, p_any)
+        metrics["ECE_anyhtn_coarse"] = expected_calibration_error(y_any, p_any, n_bins=10)
+        metrics["Brier_anyhtn_coarse"] = float(brier_score_loss(y_any, p_any)) if len(np.unique(y_any)) >= 2 else np.nan
+        metrics["coarse_head_positive_rate_pred"] = float((p_any >= 0.5).mean())
+        metrics["coarse_head_positive_rate_true"] = float(y_any.mean())
     metrics.update({"decoder_mode": mode, "decoder_objective": decoder_objective, "decoder_used_saved_thresholds": bool(used_saved), "decoder_has_val_search": bool(val_used)})
     if temp_grade is not None:
         metrics["temperature_grade"] = float(temp_grade)
@@ -1369,7 +1388,20 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
             "grade_ge1_score": float(p_ge_grade_dec[i, 0]), "grade_ge2_score": float(p_ge_grade_dec[i, 1]), "grade_ge3_score": float(p_ge_grade_dec[i, 2]),
             "stage_ge1_score": float(p_ge_stage_dec[i, 0]), "stage_ge2_score": float(p_ge_stage_dec[i, 1]),
             "decoder_mode": mode,
+            "sep_head_mode": str(sep_head_mode),
         }
+        if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
+            row["p_anyhtn_coarse"] = float(np.asarray(aux_scores["p_anyhtn_coarse"]).reshape(-1)[i])
+            row["coarse_pred_raw"] = int(row["p_anyhtn_coarse"] >= 0.5)
+        if isinstance(aux_scores, dict) and "grade_pos_probs" in aux_scores:
+            gpp = np.asarray(aux_scores["grade_pos_probs"])
+            row["grade_pos_cond_prob_1"] = float(gpp[i, 0])
+            row["grade_pos_cond_prob_2"] = float(gpp[i, 1])
+            row["grade_pos_cond_prob_3"] = float(gpp[i, 2])
+        if isinstance(aux_scores, dict) and "stage_pos_probs" in aux_scores:
+            spp = np.asarray(aux_scores["stage_pos_probs"])
+            row["stage_pos_cond_prob_1"] = float(spp[i, 0])
+            row["stage_pos_cond_prob_2"] = float(spp[i, 1])
         if mode in {"ev", "temp_ev"}:
             row["grade_ev_score"] = float(ev_grade_score[i]); row["stage_ev_score"] = float(ev_stage_score[i])
         if mode in {"threshold", "temp_threshold"} and "thresholds" in decoder_summary:
@@ -1389,6 +1421,9 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
         f"ECE_stage_any_htn={metrics['ECE_stage_any_htn']}", f"Brier_stage_any_htn={metrics['Brier_stage_any_htn']}",
         f"invalid_rate={metrics['invalid_rate']}", "", "[Decoder Summary]",
         json.dumps({**decoder_summary, "used_saved_thresholds": used_saved, "has_val_search": val_used, "temperature_grade": temp_grade, "temperature_stage": temp_stage}, ensure_ascii=False),
+        "", "[Coarse-to-Fine Summary]", f"sep_head_mode={sep_head_mode}", f"AUROC_anyhtn_coarse={metrics.get('AUROC_anyhtn_coarse')}",
+        f"coarse_auc_loss_mode={metrics.get('coarse_auc_loss_mode')}", f"loss_w_anyhtn_auc={metrics.get('loss_w_anyhtn_auc')}",
+        f"auc_margin={metrics.get('auc_margin')}", f"auc_pair_subsample={metrics.get('auc_pair_subsample')}",
         "", "[Confmat_grade labels=0,1,2,3]", np.array2string(cm_grade, separator=', '), "", "[Confmat_stage labels=0,1,2]", np.array2string(cm_stage, separator=', '), "",
         "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]", np.array2string(cm7, separator=', '), "", "[invalid_type_count]", json.dumps(cnt, ensure_ascii=False, sort_keys=True), "", "[generated_figures]",
         "roc_grade_any_htn.png", "roc_grade_comparison.png", "Confmat_grade.png", "roc_stage_any_htn.png", "roc_stage_comparison.png", "Confmat_stage.png", "calib_any_htn_grade.png", "calib_any_htn_stage.png", "Confmat_grade_stage.png", "invalid_type_hist.png",
