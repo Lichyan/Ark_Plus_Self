@@ -101,6 +101,11 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.w_stage = w_stage
         self.w_anyhtn = 1.0
         self.pos_weight_anyhtn = None
+        self.coarse_auc_loss_mode = "none"
+        self.loss_w_anyhtn_auc = 0.0
+        self.auc_margin = 1.0
+        self.auc_pair_subsample = 256
+        self.auc_loss_detach_probs = False
         self.use_joint_train = use_joint_train
         self.lambda_incomp = lambda_incomp
         self.lambda_joint = lambda_joint
@@ -114,6 +119,38 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.ordinal_mode = ordinal_mode
         self.current_epoch = 0
         self.last_components = None
+
+    def _compute_pairwise_auc_loss(self, scores, labels):
+        mode = str(getattr(self, "coarse_auc_loss_mode", "none") or "none").lower()
+        weight = float(getattr(self, "loss_w_anyhtn_auc", 0.0) or 0.0)
+        if mode == "none" or weight <= 0:
+            return scores.new_tensor(0.0)
+
+        labels = labels.view(-1)
+        scores = scores.view(-1)
+        if getattr(self, "auc_loss_detach_probs", False):
+            scores = scores.detach()
+
+        pos_idx = torch.where(labels > 0.5)[0]
+        neg_idx = torch.where(labels <= 0.5)[0]
+        if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+            return scores.new_tensor(0.0)
+
+        max_n = int(getattr(self, "auc_pair_subsample", 256) or 256)
+        if max_n > 0 and pos_idx.numel() > max_n:
+            pos_idx = pos_idx[torch.randperm(pos_idx.numel(), device=pos_idx.device)[:max_n]]
+        if max_n > 0 and neg_idx.numel() > max_n:
+            neg_idx = neg_idx[torch.randperm(neg_idx.numel(), device=neg_idx.device)[:max_n]]
+
+        pos_scores = scores[pos_idx].view(-1, 1)
+        neg_scores = scores[neg_idx].view(1, -1)
+        delta = pos_scores - neg_scores
+        if mode == "pairwise_hinge":
+            margin = float(getattr(self, "auc_margin", 1.0) or 1.0)
+            return F.relu(margin - delta).mean()
+        if mode == "pairwise_logistic":
+            return F.softplus(-delta).mean()
+        return scores.new_tensor(0.0)
 
     def set_epoch(self, epoch):
         self.current_epoch = epoch
@@ -176,6 +213,8 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 loss_h = F.binary_cross_entropy_with_logits(z_h, y_h, pos_weight=self.pos_weight_anyhtn)
             else:
                 loss_h = F.binary_cross_entropy_with_logits(z_h, y_h)
+            loss_h_auc = self._compute_pairwise_auc_loss(z_h, y_h)
+            loss_h_total = loss_h + float(getattr(self, "loss_w_anyhtn_auc", 0.0) or 0.0) * loss_h_auc
 
             mask_pos = y_h.view(-1) > 0.5
             if mask_pos.any():
@@ -193,9 +232,11 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 loss_g = z_g.sum() * 0.0
                 loss_s = z_s.sum() * 0.0
 
-            loss = self.w_anyhtn * loss_h + self.w_grade * loss_g + self.w_stage * loss_s
+            loss = self.w_anyhtn * loss_h_total + self.w_grade * loss_g + self.w_stage * loss_s
             self.last_components = {
                 "loss_anyhtn": float(loss_h.detach().cpu()),
+                "loss_anyhtn_auc": float(loss_h_auc.detach().cpu()),
+                "loss_anyhtn_total": float(loss_h_total.detach().cpu()),
                 "loss_grade": float(loss_g.detach().cpu()),
                 "loss_stage": float(loss_s.detach().cpu()),
                 "loss_total": float(loss.detach().cpu()),
@@ -541,6 +582,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
         )
         criterion.w_anyhtn = getattr(args, "loss_w_anyhtn", 1.0)
+        criterion.coarse_auc_loss_mode = str(getattr(args, "coarse_auc_loss_mode", "none") or "none").lower()
+        criterion.loss_w_anyhtn_auc = float(getattr(args, "loss_w_anyhtn_auc", 0.0) or 0.0)
+        criterion.auc_margin = float(getattr(args, "auc_margin", 1.0) or 1.0)
+        criterion.auc_pair_subsample = int(getattr(args, "auc_pair_subsample", 256) or 256)
+        criterion.auc_loss_detach_probs = bool(getattr(args, "auc_loss_detach_probs", False))
         if getattr(args, "pos_weight_anyhtn", None):
           try:
             criterion.pos_weight_anyhtn = torch.tensor(float(args.pos_weight_anyhtn), dtype=torch.float32, device=device)
@@ -550,6 +596,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           f"use MultiHeadOrdinalLoss, pos_weight_grade={pos_weight_grade}, pos_weight_stage={pos_weight_stage}",
           flush=True,
         )
+        if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
+          print(
+            f"[sep_v1 coarse_auc] mode={criterion.coarse_auc_loss_mode} alpha={criterion.loss_w_anyhtn_auc} "
+            f"margin={criterion.auc_margin} pair_subsample={criterion.auc_pair_subsample} "
+            f"detach={criterion.auc_loss_detach_probs}",
+            flush=True,
+          )
       elif args.loss_fn.lower() == 'focal':
         criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
         print("use FocalLoss...", flush=True)
@@ -654,22 +707,42 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         val_loss = val_out[0] if isinstance(val_out, tuple) else val_out
         val_components = val_out[1] if isinstance(val_out, tuple) else None
         if args.data_set in multihead_datasets and train_components is not None and val_components is not None:
-          print(
-            "[MultiHead][Loss] train: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f} | "
-            "val: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f}".format(
-              train_components.get("loss_grade", 0.0),
-              train_components.get("loss_stage", 0.0),
-              train_components.get("loss_incomp", 0.0),
-              train_components.get("loss_joint", 0.0),
-              train_components.get("loss_total", train_loss),
-              val_components.get("loss_grade", 0.0),
-              val_components.get("loss_stage", 0.0),
-              val_components.get("loss_incomp", 0.0),
-              val_components.get("loss_joint", 0.0),
-              val_components.get("loss_total", val_loss),
-            ),
-            flush=True,
-          )
+          if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
+            print(
+              "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} G={:.4f} S={:.4f} total={:.4f} | "
+              "val: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} G={:.4f} S={:.4f} total={:.4f}".format(
+                train_components.get("loss_anyhtn", 0.0),
+                train_components.get("loss_anyhtn_auc", 0.0),
+                train_components.get("loss_anyhtn_total", 0.0),
+                train_components.get("loss_grade", 0.0),
+                train_components.get("loss_stage", 0.0),
+                train_components.get("loss_total", train_loss),
+                val_components.get("loss_anyhtn", 0.0),
+                val_components.get("loss_anyhtn_auc", 0.0),
+                val_components.get("loss_anyhtn_total", 0.0),
+                val_components.get("loss_grade", 0.0),
+                val_components.get("loss_stage", 0.0),
+                val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
+          else:
+            print(
+              "[MultiHead][Loss] train: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f} | "
+              "val: grade={:.4f} stage={:.4f} incomp={:.4f} joint={:.4f} total={:.4f}".format(
+                train_components.get("loss_grade", 0.0),
+                train_components.get("loss_stage", 0.0),
+                train_components.get("loss_incomp", 0.0),
+                train_components.get("loss_joint", 0.0),
+                train_components.get("loss_total", train_loss),
+                val_components.get("loss_grade", 0.0),
+                val_components.get("loss_stage", 0.0),
+                val_components.get("loss_incomp", 0.0),
+                val_components.get("loss_joint", 0.0),
+                val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
 
         y_val_np, p_val_np, val_auc_hyp = None, None, None
         y_grade_val, y_stage_val, p_grade_val, p_stage_val = None, None, None, None
@@ -1026,6 +1099,10 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               aux_scores=aux_scores,
               loss_w_anyhtn=getattr(args, "loss_w_anyhtn", 1.0),
               pos_weight_anyhtn=getattr(args, "pos_weight_anyhtn", None),
+              coarse_auc_loss_mode=getattr(args, "coarse_auc_loss_mode", "none"),
+              loss_w_anyhtn_auc=getattr(args, "loss_w_anyhtn_auc", 0.0),
+              auc_margin=getattr(args, "auc_margin", 1.0),
+              auc_pair_subsample=getattr(args, "auc_pair_subsample", 256),
             )
             with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
               if pred_rows:

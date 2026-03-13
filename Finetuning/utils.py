@@ -1180,7 +1180,8 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
                              temperature_init=1.0, temperature_min=0.5, temperature_max=5.0, temperature_grid_size=91,
                              decoder_keep_raw_metrics=True, thresholds_src=None,
                              val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None,
-                             sep_head_mode="flat", aux_scores=None, loss_w_anyhtn=1.0, pos_weight_anyhtn=None):
+                             sep_head_mode="flat", aux_scores=None, loss_w_anyhtn=1.0, pos_weight_anyhtn=None,
+                             coarse_auc_loss_mode="none", loss_w_anyhtn_auc=0.0, auc_margin=1.0, auc_pair_subsample=256):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
     p_ge_grade = np.asarray(p_ge_grade)
@@ -1313,6 +1314,10 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     metrics["sep_head_mode"] = str(sep_head_mode)
     metrics["coarse_to_fine_enabled"] = bool(str(sep_head_mode).lower() == "coarse_fine")
     metrics["loss_w_anyhtn"] = float(loss_w_anyhtn)
+    metrics["coarse_auc_loss_mode"] = str(coarse_auc_loss_mode)
+    metrics["loss_w_anyhtn_auc"] = float(loss_w_anyhtn_auc)
+    metrics["auc_margin"] = float(auc_margin)
+    metrics["auc_pair_subsample"] = int(auc_pair_subsample)
     if pos_weight_anyhtn is not None:
         metrics["pos_weight_anyhtn"] = pos_weight_anyhtn
     if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
@@ -1417,6 +1422,8 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
         f"invalid_rate={metrics['invalid_rate']}", "", "[Decoder Summary]",
         json.dumps({**decoder_summary, "used_saved_thresholds": used_saved, "has_val_search": val_used, "temperature_grade": temp_grade, "temperature_stage": temp_stage}, ensure_ascii=False),
         "", "[Coarse-to-Fine Summary]", f"sep_head_mode={sep_head_mode}", f"AUROC_anyhtn_coarse={metrics.get('AUROC_anyhtn_coarse')}",
+        f"coarse_auc_loss_mode={metrics.get('coarse_auc_loss_mode')}", f"loss_w_anyhtn_auc={metrics.get('loss_w_anyhtn_auc')}",
+        f"auc_margin={metrics.get('auc_margin')}", f"auc_pair_subsample={metrics.get('auc_pair_subsample')}",
         "", "[Confmat_grade labels=0,1,2,3]", np.array2string(cm_grade, separator=', '), "", "[Confmat_stage labels=0,1,2]", np.array2string(cm_stage, separator=', '), "",
         "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]", np.array2string(cm7, separator=', '), "", "[invalid_type_count]", json.dumps(cnt, ensure_ascii=False, sort_keys=True), "", "[generated_figures]",
         "roc_grade_any_htn.png", "roc_grade_comparison.png", "Confmat_grade.png", "roc_stage_any_htn.png", "roc_stage_comparison.png", "Confmat_stage.png", "calib_any_htn_grade.png", "calib_any_htn_stage.png", "Confmat_grade_stage.png", "invalid_type_hist.png",

@@ -1,3 +1,7 @@
+[2026-03-13] -codex
+Reason: 在 sep_v1 coarse_fine 验证版上增加“仅 coarse any-HTN head 使用 BCE + AUC-oriented pairwise loss”的可控能力，便于最小归因验证。
+Changes: 新增 --coarse_auc_loss_mode(none|pairwise_hinge|pairwise_logistic)、--loss_w_anyhtn_auc、--auc_margin、--auc_pair_subsample、--auc_loss_detach_probs；仅在 advCheX_hyp_multi_grade_stage_sep_v1 + sep_head_mode=coarse_fine 的 coarse head 内使用 L_H=BCE+alpha*AUC（score 使用 coarse logits，支持正负子采样，batch 全正/全负返回0）；保持 positive-only grade/stage 分支、soft gate 合成和 decoder 主流程不变；训练日志增加 H_bce/H_auc/H_total；metrics.json 与 result.txt 追加 coarse AUC loss 配置字段。
+
 [2026-03-11] -codex
 Reason: 为 sep_v1 增加 soft-gated coarse-to-fine 验证分支，并与现有 decoder_mode 流程兼容。
 Changes: 新增 --sep_head_mode(flat|coarse_fine)、--loss_w_anyhtn、--pos_weight_anyhtn；模型支持 coarse any-HTN + positive-only grade/stage 头并合成最终 grade/stage 累计概率；训练损失支持 coarse+masked positive-only 分支；test/val 预测与阈值搜索路径支持 coarse_fine 输出并追加 coarse-to-fine 指标与 predictions.csv 字段（p_anyhtn_coarse、条件概率等），保持原有输出文件结构可用。
