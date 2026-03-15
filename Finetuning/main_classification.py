@@ -193,6 +193,11 @@ def get_args_parser():
     parser.add_option("--auc_pair_subsample", dest="auc_pair_subsample", help="max sampled positives/negatives per batch for pairwise AUC", default=256, type="int")
     parser.add_option("--auc_loss_detach_probs", dest="auc_loss_detach_probs", help="detach coarse logits before AUC loss", default=False,
                       action="callback", callback=vararg_callback_bool)
+    parser.add_option("--fine_soft_label_mode", dest="fine_soft_label_mode", help="none|grade_only|grade_and_stage", default="none", type="string")
+    parser.add_option("--grade_soft_center", dest="grade_soft_center", help="center mass for positive-grade soft labels", default=0.85, type="float")
+    parser.add_option("--stage_label_smoothing", dest="stage_label_smoothing", help="label smoothing epsilon for positive-stage head", default=0.05, type="float")
+    parser.add_option("--loss_w_grade_soft", dest="loss_w_grade_soft", help="aux soft-label loss weight for positive-grade head", default=0.2, type="float")
+    parser.add_option("--loss_w_stage_smooth", dest="loss_w_stage_smooth", help="optional scale for stage smoothing BCE", default=1.0, type="float")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,

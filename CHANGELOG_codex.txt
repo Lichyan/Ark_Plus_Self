@@ -1,4 +1,8 @@
 [2026-03-13] -codex
+Reason: 在 sep_v1 + coarse_fine 验证版增加第一轮最小可行的 fine-head soft label/LDL 辅助损失正则，只影响训练端并保持测试/decoder主逻辑稳定。
+Changes: 新增 --fine_soft_label_mode(none|grade_only|grade_and_stage)、--grade_soft_center、--stage_label_smoothing、--loss_w_grade_soft、--loss_w_stage_smooth；仅在 advCheX_hyp_multi_grade_stage_sep_v1 + sep_head_mode=coarse_fine 下生效：grade 分支保持 CORN 主损失并附加 soft CE(LDL)辅助项，stage 分支在 grade_and_stage 模式使用 smoothed BCE target；coarse head结构与loss主逻辑不改；训练日志补充 L_G_CORN/L_G_soft/L_G_total 与 stage smoothing 状态；metrics.json/result.txt 追加 soft-label 配置字段。
+
+[2026-03-13] -codex
 Reason: 在 sep_v1 coarse_fine 验证版上增加“仅 coarse any-HTN head 使用 BCE + AUC-oriented pairwise loss”的可控能力，便于最小归因验证。
 Changes: 新增 --coarse_auc_loss_mode(none|pairwise_hinge|pairwise_logistic)、--loss_w_anyhtn_auc、--auc_margin、--auc_pair_subsample、--auc_loss_detach_probs；仅在 advCheX_hyp_multi_grade_stage_sep_v1 + sep_head_mode=coarse_fine 的 coarse head 内使用 L_H=BCE+alpha*AUC（score 使用 coarse logits，支持正负子采样，batch 全正/全负返回0）；保持 positive-only grade/stage 分支、soft gate 合成和 decoder 主流程不变；训练日志增加 H_bce/H_auc/H_total；metrics.json 与 result.txt 追加 coarse AUC loss 配置字段。
 

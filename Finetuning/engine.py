@@ -106,6 +106,11 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.auc_margin = 1.0
         self.auc_pair_subsample = 256
         self.auc_loss_detach_probs = False
+        self.fine_soft_label_mode = "none"
+        self.grade_soft_center = 0.85
+        self.stage_label_smoothing = 0.05
+        self.loss_w_grade_soft = 0.2
+        self.loss_w_stage_smooth = 1.0
         self.use_joint_train = use_joint_train
         self.lambda_incomp = lambda_incomp
         self.lambda_joint = lambda_joint
@@ -151,6 +156,48 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         if mode == "pairwise_logistic":
             return F.softplus(-delta).mean()
         return scores.new_tensor(0.0)
+
+    def _build_positive_grade_probs_from_corn(self, logits_pos):
+        q = torch.sigmoid(logits_pos)
+        a1 = q[:, 0:1]
+        a2 = q[:, 1:2]
+        p1 = torch.clamp(1.0 - a1, 0.0, 1.0)
+        p2 = torch.clamp(a1 * (1.0 - a2), 0.0, 1.0)
+        p3 = torch.clamp(a1 * a2, 0.0, 1.0)
+        p = torch.cat([p1, p2, p3], dim=1)
+        p = p / p.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        return p
+
+    def _build_grade_soft_targets(self, raw_grade_pos, center):
+        center = float(center)
+        rest = max(0.0, 1.0 - center)
+        y = torch.zeros((raw_grade_pos.shape[0], 3), dtype=torch.float32, device=raw_grade_pos.device)
+        cls = (raw_grade_pos.long() - 1).clamp(min=0, max=2)
+        if y.shape[0] == 0:
+            return y
+        # grade=1
+        m0 = cls == 0
+        y[m0, 0] = center
+        y[m0, 1] = rest
+        # grade=2
+        m1 = cls == 1
+        y[m1, 0] = rest / 2.0
+        y[m1, 1] = center
+        y[m1, 2] = rest / 2.0
+        # grade=3
+        m2 = cls == 2
+        y[m2, 1] = rest
+        y[m2, 2] = center
+        return y
+
+    def _compute_grade_soft_loss(self, p_grade_pos, y_soft):
+        p = p_grade_pos.clamp_min(1e-8)
+        return (-(y_soft * torch.log(p)).sum(dim=1)).mean()
+
+    def _smooth_stage_targets(self, stage_pos_bin, eps):
+        eps = float(eps)
+        y = stage_pos_bin.float().view(-1, 1)
+        return y * (1.0 - eps) + (1.0 - y) * eps
 
     def set_epoch(self, epoch):
         self.current_epoch = epoch
@@ -217,18 +264,35 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             loss_h_total = loss_h + float(getattr(self, "loss_w_anyhtn_auc", 0.0) or 0.0) * loss_h_auc
 
             mask_pos = y_h.view(-1) > 0.5
+            mode_soft = str(getattr(self, "fine_soft_label_mode", "none") or "none").lower()
+            enable_grade_soft = mode_soft in {"grade_only", "grade_and_stage"}
+            enable_stage_smooth = mode_soft == "grade_and_stage"
+
             if mask_pos.any():
                 g_pos = (raw_grade[mask_pos] - 1).long().clamp(min=0, max=2)
                 lg = z_g[mask_pos]
                 t1 = (g_pos >= 1).float().view(-1, 1)
                 t2 = (g_pos >= 2).float().view(-1, 1)
-                loss_g = F.binary_cross_entropy_with_logits(lg[:, :1], t1)
-                loss_g = loss_g + F.binary_cross_entropy_with_logits(lg[:, 1:2], t2)
+                loss_g_corn = F.binary_cross_entropy_with_logits(lg[:, :1], t1)
+                loss_g_corn = loss_g_corn + F.binary_cross_entropy_with_logits(lg[:, 1:2], t2)
+
+                loss_g_soft = lg.sum() * 0.0
+                if enable_grade_soft:
+                    p_grade_pos = self._build_positive_grade_probs_from_corn(lg)
+                    y_soft = self._build_grade_soft_targets(raw_grade[mask_pos], getattr(self, "grade_soft_center", 0.85))
+                    loss_g_soft = self._compute_grade_soft_loss(p_grade_pos, y_soft)
+                loss_g = loss_g_corn + float(getattr(self, "loss_w_grade_soft", 0.2) or 0.0) * loss_g_soft
 
                 s_pos = (raw_stage[mask_pos] - 1).long().clamp(min=0, max=1)
                 ls = z_s[mask_pos]
-                loss_s = F.binary_cross_entropy_with_logits(ls.view(-1, 1), s_pos.float().view(-1, 1))
+                stage_target = s_pos.float().view(-1, 1)
+                if enable_stage_smooth:
+                    stage_target = self._smooth_stage_targets(stage_target, getattr(self, "stage_label_smoothing", 0.05))
+                loss_s = F.binary_cross_entropy_with_logits(ls.view(-1, 1), stage_target)
+                loss_s = float(getattr(self, "loss_w_stage_smooth", 1.0) or 1.0) * loss_s
             else:
+                loss_g_corn = z_g.sum() * 0.0
+                loss_g_soft = z_g.sum() * 0.0
                 loss_g = z_g.sum() * 0.0
                 loss_s = z_s.sum() * 0.0
 
@@ -238,6 +302,10 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 "loss_anyhtn_auc": float(loss_h_auc.detach().cpu()),
                 "loss_anyhtn_total": float(loss_h_total.detach().cpu()),
                 "loss_grade": float(loss_g.detach().cpu()),
+                "loss_grade_corn": float(loss_g_corn.detach().cpu()),
+                "loss_grade_soft": float(loss_g_soft.detach().cpu()),
+                "loss_grade_total": float(loss_g.detach().cpu()),
+                "stage_smooth_enabled": float(1.0 if enable_stage_smooth else 0.0),
                 "loss_stage": float(loss_s.detach().cpu()),
                 "loss_total": float(loss.detach().cpu()),
             }
@@ -587,6 +655,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.auc_margin = float(getattr(args, "auc_margin", 1.0) or 1.0)
         criterion.auc_pair_subsample = int(getattr(args, "auc_pair_subsample", 256) or 256)
         criterion.auc_loss_detach_probs = bool(getattr(args, "auc_loss_detach_probs", False))
+        criterion.fine_soft_label_mode = str(getattr(args, "fine_soft_label_mode", "none") or "none").lower()
+        criterion.grade_soft_center = float(getattr(args, "grade_soft_center", 0.85) or 0.85)
+        criterion.stage_label_smoothing = float(getattr(args, "stage_label_smoothing", 0.05) or 0.05)
+        criterion.loss_w_grade_soft = float(getattr(args, "loss_w_grade_soft", 0.2) or 0.2)
+        criterion.loss_w_stage_smooth = float(getattr(args, "loss_w_stage_smooth", 1.0) or 1.0)
         if getattr(args, "pos_weight_anyhtn", None):
           try:
             criterion.pos_weight_anyhtn = torch.tensor(float(args.pos_weight_anyhtn), dtype=torch.float32, device=device)
@@ -601,6 +674,12 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             f"[sep_v1 coarse_auc] mode={criterion.coarse_auc_loss_mode} alpha={criterion.loss_w_anyhtn_auc} "
             f"margin={criterion.auc_margin} pair_subsample={criterion.auc_pair_subsample} "
             f"detach={criterion.auc_loss_detach_probs}",
+            flush=True,
+          )
+          print(
+            f"[sep_v1 fine_soft] mode={criterion.fine_soft_label_mode} grade_center={criterion.grade_soft_center} "
+            f"stage_smoothing={criterion.stage_label_smoothing} loss_w_grade_soft={criterion.loss_w_grade_soft} "
+            f"loss_w_stage_smooth={criterion.loss_w_stage_smooth}",
             flush=True,
           )
       elif args.loss_fn.lower() == 'focal':
@@ -709,19 +788,27 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         if args.data_set in multihead_datasets and train_components is not None and val_components is not None:
           if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
             print(
-              "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} G={:.4f} S={:.4f} total={:.4f} | "
-              "val: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} G={:.4f} S={:.4f} total={:.4f}".format(
+              "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} "
+              "G_corn={:.4f} G_soft={:.4f} G_total={:.4f} S={:.4f} S_smooth={:.0f} total={:.4f} | "
+              "val: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} G_corn={:.4f} G_soft={:.4f} G_total={:.4f} "
+              "S={:.4f} S_smooth={:.0f} total={:.4f}".format(
                 train_components.get("loss_anyhtn", 0.0),
                 train_components.get("loss_anyhtn_auc", 0.0),
                 train_components.get("loss_anyhtn_total", 0.0),
-                train_components.get("loss_grade", 0.0),
+                train_components.get("loss_grade_corn", 0.0),
+                train_components.get("loss_grade_soft", 0.0),
+                train_components.get("loss_grade_total", train_components.get("loss_grade", 0.0)),
                 train_components.get("loss_stage", 0.0),
+                train_components.get("stage_smooth_enabled", 0.0),
                 train_components.get("loss_total", train_loss),
                 val_components.get("loss_anyhtn", 0.0),
                 val_components.get("loss_anyhtn_auc", 0.0),
                 val_components.get("loss_anyhtn_total", 0.0),
-                val_components.get("loss_grade", 0.0),
+                val_components.get("loss_grade_corn", 0.0),
+                val_components.get("loss_grade_soft", 0.0),
+                val_components.get("loss_grade_total", val_components.get("loss_grade", 0.0)),
                 val_components.get("loss_stage", 0.0),
+                val_components.get("stage_smooth_enabled", 0.0),
                 val_components.get("loss_total", val_loss),
               ),
               flush=True,
@@ -1103,6 +1190,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_anyhtn_auc=getattr(args, "loss_w_anyhtn_auc", 0.0),
               auc_margin=getattr(args, "auc_margin", 1.0),
               auc_pair_subsample=getattr(args, "auc_pair_subsample", 256),
+              fine_soft_label_mode=getattr(args, "fine_soft_label_mode", "none"),
+              grade_soft_center=getattr(args, "grade_soft_center", 0.85),
+              stage_label_smoothing=getattr(args, "stage_label_smoothing", 0.05),
+              loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
+              loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
             )
             with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
               if pred_rows:
