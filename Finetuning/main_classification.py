@@ -41,6 +41,8 @@ def get_args_parser():
                       default=None, type="string")
     parser.add_option("--val_list", dest="val_list", help="file for validating list",
                       default=None, type="string")
+    parser.add_option("--val_data_dir", dest="val_data_dir", help="optional root dir for validation images",
+                      default=None, type="string")
     parser.add_option("--test_list", dest="test_list", help="file for test list",
                       default=None, type="string")
     parser.add_option("--train_weights", dest="train_weights", help="optional sampling weight file for training", default=None, type="string")
@@ -169,6 +171,33 @@ def get_args_parser():
     parser.add_option("--modethese", dest="modethese", help="enable extended metrics/figures for论文需求", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--thresholds_json", dest="thresholds_json", help="optional json file that stores thresholds for ordinal eval", default=None, type="string")
+    parser.add_option("--decodermode", dest="decodermode", help="non|threshold|ev|temp_threshold|temp_ev", default="non", type="string")
+    parser.add_option("--decoder_objective", dest="decoder_objective", help="qwk|macro_f1|balanced_acc|mid_recall|composite", default="qwk", type="string")
+    parser.add_option("--decoder_bins", dest="decoder_bins", help="grid bins for decoder search", default=101, type="int")
+    parser.add_option("--decoder_use_saved_thresholds", dest="decoder_use_saved_thresholds", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--decoder_save_debug", dest="decoder_save_debug", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--temperature_init", dest="temperature_init", default=1.0, type="float")
+    parser.add_option("--temperature_min", dest="temperature_min", default=0.5, type="float")
+    parser.add_option("--temperature_max", dest="temperature_max", default=5.0, type="float")
+    parser.add_option("--temperature_grid_size", dest="temperature_grid_size", default=91, type="int")
+    parser.add_option("--decoder_keep_raw_metrics", dest="decoder_keep_raw_metrics", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--sep_head_mode", dest="sep_head_mode", help="flat|coarse_fine", default="flat", type="string")
+    parser.add_option("--loss_w_anyhtn", dest="loss_w_anyhtn", help="coarse any-HTN loss weight", default=1.0, type="float")
+    parser.add_option("--pos_weight_anyhtn", dest="pos_weight_anyhtn", help="optional positive weight for any-HTN coarse head", default=None, type="string")
+    parser.add_option("--coarse_auc_loss_mode", dest="coarse_auc_loss_mode", help="none|pairwise_hinge|pairwise_logistic", default="none", type="string")
+    parser.add_option("--loss_w_anyhtn_auc", dest="loss_w_anyhtn_auc", help="coarse AUC-oriented loss alpha", default=0.0, type="float")
+    parser.add_option("--auc_margin", dest="auc_margin", help="margin for pairwise hinge AUC loss", default=1.0, type="float")
+    parser.add_option("--auc_pair_subsample", dest="auc_pair_subsample", help="max sampled positives/negatives per batch for pairwise AUC", default=256, type="int")
+    parser.add_option("--auc_loss_detach_probs", dest="auc_loss_detach_probs", help="detach coarse logits before AUC loss", default=False,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--fine_soft_label_mode", dest="fine_soft_label_mode", help="none|grade_only|grade_and_stage", default="none", type="string")
+    parser.add_option("--grade_soft_center", dest="grade_soft_center", help="center mass for positive-grade soft labels", default=0.85, type="float")
+    parser.add_option("--stage_label_smoothing", dest="stage_label_smoothing", help="label smoothing epsilon for positive-stage head", default=0.05, type="float")
+    parser.add_option("--loss_w_grade_soft", dest="loss_w_grade_soft", help="aux soft-label loss weight for positive-grade head", default=0.2, type="float")
+    parser.add_option("--loss_w_stage_smooth", dest="loss_w_stage_smooth", help="optional scale for stage smoothing BCE", default=1.0, type="float")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
@@ -619,6 +648,7 @@ def main(args):
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         label_names = ["grade>=1", "grade>=2", "grade>=3", "stage>=1", "stage>=2"]
+        need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
         if args.mode == "train":
             dataset_train = advCheX_hyp_multi_grade_stage_sep_v1(
                 images_path=args.data_dir,
@@ -631,8 +661,14 @@ def main(args):
                 ),
                 few_shot=args.few_shot,
             )
+        else:
+            dataset_train = None
+
+        val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
+        if args.mode == "train" or need_decoder_val:
+            print(f"[sep_v1] val_images_root={val_images_root}, val_list={args.val_list}", flush=True)
             dataset_val = advCheX_hyp_multi_grade_stage_sep_v1(
-                images_path=args.data_dir,
+                images_path=val_images_root,
                 file_path=args.val_list,
                 augment=build_transform_classification(
                     normalize=args.normalization,
@@ -642,7 +678,6 @@ def main(args):
                 ),
             )
         else:
-            dataset_train = None
             dataset_val = None
 
         dataset_test = advCheX_hyp_multi_grade_stage_sep_v1(

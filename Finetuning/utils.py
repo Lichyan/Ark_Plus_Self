@@ -1040,7 +1040,150 @@ def _joint_name_from_pred(g, s):
     return f"{int(g)}{int(s)}"
 
 
-def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False):
+def _safe_kappa(y_true, y_pred):
+    from sklearn.metrics import cohen_kappa_score
+    try:
+        return float(cohen_kappa_score(y_true, y_pred, weights="quadratic"))
+    except Exception:
+        return np.nan
+
+
+def _decoder_objective_value(y_true, y_pred, objective, head="grade"):
+    objective = str(objective or "qwk").lower()
+    qwk = _safe_kappa(y_true, y_pred)
+    macro = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
+    bal = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
+    if head == "grade":
+        rec_mid = 0.5 * (
+            float(recall_score(y_true, y_pred, labels=[1], average="macro", zero_division=0)) +
+            float(recall_score(y_true, y_pred, labels=[2], average="macro", zero_division=0))
+        )
+    else:
+        rec_mid = float(recall_score(y_true, y_pred, labels=[1], average="macro", zero_division=0))
+    if objective == "qwk":
+        return qwk
+    if objective == "macro_f1":
+        return macro
+    if objective == "balanced_acc":
+        return bal
+    if objective == "mid_recall":
+        return rec_mid
+    if objective == "composite":
+        return 0.50 * qwk + 0.30 * macro + 0.20 * rec_mid
+    return qwk
+
+
+def _decode_threshold(p_ge, thresholds):
+    th = np.asarray(thresholds, dtype=float).reshape(1, -1)
+    return np.sum(np.asarray(p_ge) >= th, axis=1).astype(int)
+
+
+def _search_thresholds_for_decoder(y_true, p_ge, bins=101, objective="qwk", head="grade"):
+    grid = np.linspace(0.0, 1.0, int(max(3, bins)))
+    best_score, best_th = -np.inf, None
+    if p_ge.shape[1] == 3:
+        for t1 in grid:
+            for t2 in grid[grid <= t1]:
+                for t3 in grid[grid <= t2]:
+                    pred = _decode_threshold(p_ge, [t1, t2, t3])
+                    score = _decoder_objective_value(y_true, pred, objective, head=head)
+                    if score > best_score:
+                        best_score, best_th = score, [float(t1), float(t2), float(t3)]
+    else:
+        for u1 in grid:
+            for u2 in grid[grid <= u1]:
+                pred = _decode_threshold(p_ge, [u1, u2])
+                score = _decoder_objective_value(y_true, pred, objective, head=head)
+                if score > best_score:
+                    best_score, best_th = score, [float(u1), float(u2)]
+    return best_th, float(best_score)
+
+
+def _expected_value_from_pge(p_ge):
+    p_cls = ordinal_probs_to_class_probs(np.asarray(p_ge))
+    values = np.arange(p_cls.shape[1], dtype=float)
+    return p_cls @ values
+
+
+def _decode_ev(ev_score, cutpoints):
+    return np.digitize(ev_score, bins=np.asarray(cutpoints, dtype=float), right=False).astype(int)
+
+
+def _search_cutpoints_for_ev(y_true, ev_score, n_classes, bins=101, objective="qwk", head="grade"):
+    grid = np.linspace(0.0, float(n_classes - 1), int(max(3, bins)))
+    best_score, best_cp = -np.inf, None
+    if n_classes == 4:
+        for c1 in grid:
+            for c2 in grid[grid >= c1]:
+                for c3 in grid[grid >= c2]:
+                    pred = _decode_ev(ev_score, [c1, c2, c3])
+                    score = _decoder_objective_value(y_true, pred, objective, head=head)
+                    if score > best_score:
+                        best_score, best_cp = score, [float(c1), float(c2), float(c3)]
+    else:
+        for d1 in grid:
+            for d2 in grid[grid >= d1]:
+                pred = _decode_ev(ev_score, [d1, d2])
+                score = _decoder_objective_value(y_true, pred, objective, head=head)
+                if score > best_score:
+                    best_score, best_cp = score, [float(d1), float(d2)]
+    return best_cp, float(best_score)
+
+
+def _fit_temperature_grid(y_ord, p_ge, t_min=0.5, t_max=5.0, grid_size=91, t_init=1.0):
+    y_ord = np.asarray(y_ord).astype(float)
+    p_ge = np.clip(np.asarray(p_ge).astype(float), 1e-6, 1.0 - 1e-6)
+    logits = np.log(p_ge / (1.0 - p_ge))
+    ts = np.linspace(float(t_min), float(t_max), int(max(3, grid_size)))
+    if float(t_init) not in ts:
+        ts = np.sort(np.unique(np.concatenate([ts, [float(t_init)]])))
+    best_t, best_nll = float(t_init), np.inf
+    for t in ts:
+        p = 1.0 / (1.0 + np.exp(-(logits / t)))
+        nll = -np.mean(y_ord * np.log(np.clip(p, 1e-8, 1.0)) + (1.0 - y_ord) * np.log(np.clip(1.0 - p, 1e-8, 1.0)))
+        if nll < best_nll:
+            best_t, best_nll = float(t), float(nll)
+    return best_t, best_nll
+
+
+def _apply_temp(p_ge, temp):
+    p_ge = np.clip(np.asarray(p_ge), 1e-6, 1 - 1e-6)
+    logits = np.log(p_ge / (1 - p_ge))
+    return 1.0 / (1.0 + np.exp(-(logits / temp)))
+
+
+def extract_saved_thresholds_for_sep(thresholds_src):
+    if not isinstance(thresholds_src, dict):
+        return None, None
+    gsrc = thresholds_src.get("grade") if isinstance(thresholds_src.get("grade"), dict) else None
+    ssrc = thresholds_src.get("stage") if isinstance(thresholds_src.get("stage"), dict) else None
+    if not (gsrc and ssrc):
+        return None, None
+    gobj = gsrc.get("youden", gsrc) if isinstance(gsrc.get("youden", gsrc), dict) else gsrc
+    sobj = ssrc.get("youden", ssrc) if isinstance(ssrc.get("youden", ssrc), dict) else ssrc
+    keys_ok = all(k in gobj for k in ["ge1", "ge2", "ge3"]) and all(k in sobj for k in ["ge1", "ge2"])
+    if not keys_ok:
+        return None, None
+    thr_grade = [float(gobj["ge1"]), float(gobj["ge2"]), float(gobj["ge3"])]
+    thr_stage = [float(sobj["ge1"]), float(sobj["ge2"])]
+    return thr_grade, thr_stage
+
+
+def _extract_saved_thresholds_for_sep(thresholds_src):
+    # backward-compatible alias for older internal references
+    return extract_saved_thresholds_for_sep(thresholds_src)
+
+
+def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False,
+                             decodermode="non", decoder_objective="qwk", decoder_bins=101,
+                             decoder_use_saved_thresholds=True, decoder_save_debug=True,
+                             temperature_init=1.0, temperature_min=0.5, temperature_max=5.0, temperature_grid_size=91,
+                             decoder_keep_raw_metrics=True, thresholds_src=None,
+                             val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None,
+                             sep_head_mode="flat", aux_scores=None, loss_w_anyhtn=1.0, pos_weight_anyhtn=None,
+                             coarse_auc_loss_mode="none", loss_w_anyhtn_auc=0.0, auc_margin=1.0, auc_pair_subsample=256,
+                             fine_soft_label_mode="none", grade_soft_center=0.85, stage_label_smoothing=0.05,
+                             loss_w_grade_soft=0.2, loss_w_stage_smooth=1.0):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
     p_ge_grade = np.asarray(p_ge_grade)
@@ -1049,72 +1192,164 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
     pG = ordinal_probs_to_class_probs(p_ge_grade)
     pS = ordinal_probs_to_class_probs(p_ge_stage)
-    grade_pred = pG.argmax(axis=1)
-    stage_pred = pS.argmax(axis=1)
+    grade_pred_raw = pG.argmax(axis=1)
+    stage_pred_raw = pS.argmax(axis=1)
+    grade_pred = grade_pred_raw.copy()
+    stage_pred = stage_pred_raw.copy()
+
+    mode = str(decodermode or "non").lower()
+    saved_thr_grade, saved_thr_stage = extract_saved_thresholds_for_sep(thresholds_src) if decoder_use_saved_thresholds else (None, None)
+    has_complete_saved_thresholds = (saved_thr_grade is not None and saved_thr_stage is not None)
+
+    need_val = mode in {"ev", "temp_threshold", "temp_ev"}
+    if mode == "threshold":
+        need_val = not has_complete_saved_thresholds
+
+    missing_val = (val_y_grade is None or val_y_stage is None or val_p_ge_grade is None or val_p_ge_stage is None)
+    if need_val and missing_val:
+        if mode == "threshold" and decoder_use_saved_thresholds and not has_complete_saved_thresholds:
+            raise ValueError(
+                "Decoder mode=threshold: 未找到可用的已保存阈值（grade.ge1/2/3, stage.ge1/2），且当前无法使用验证集重搜；"
+                "请提供有效 --val_list，或提供完整 _thresholds.json，或改用 --decodermode non。"
+            )
+        raise ValueError(
+            f"Decoder mode={mode} requires validation predictions for parameter search. "
+            "Please provide valid --val_list (dataset_val must be available in test flow)."
+        )
+
+    used_saved = False
+    val_used = False
+    temp_grade = None
+    temp_stage = None
+    p_ge_grade_dec = p_ge_grade.copy()
+    p_ge_stage_dec = p_ge_stage.copy()
+    val_p_ge_grade_dec = np.asarray(val_p_ge_grade).copy() if val_p_ge_grade is not None else None
+    val_p_ge_stage_dec = np.asarray(val_p_ge_stage).copy() if val_p_ge_stage is not None else None
+    decoder_summary = {"decoder_mode": mode, "decoder_objective": decoder_objective}
+    decoder_search = {}
+
+    if mode in {"temp_threshold", "temp_ev"}:
+        temp_grade, nll_g = _fit_temperature_grid(val_y_grade, val_p_ge_grade_dec, temperature_min, temperature_max, temperature_grid_size, temperature_init)
+        temp_stage, nll_s = _fit_temperature_grid(val_y_stage, val_p_ge_stage_dec, temperature_min, temperature_max, temperature_grid_size, temperature_init)
+        val_p_ge_grade_dec = _apply_temp(val_p_ge_grade_dec, temp_grade)
+        val_p_ge_stage_dec = _apply_temp(val_p_ge_stage_dec, temp_stage)
+        p_ge_grade_dec = _apply_temp(p_ge_grade_dec, temp_grade)
+        p_ge_stage_dec = _apply_temp(p_ge_stage_dec, temp_stage)
+        decoder_search["temperature"] = {"grade_nll": nll_g, "stage_nll": nll_s, "objective": "nll"}
+        val_used = True
+
+    if mode in {"threshold", "temp_threshold"}:
+        thr_grade = saved_thr_grade if decoder_use_saved_thresholds else None
+        thr_stage = saved_thr_stage if decoder_use_saved_thresholds else None
+        if thr_grade is not None and thr_stage is not None:
+            used_saved = True
+        if thr_grade is None or thr_stage is None:
+            val_grade_true = np.array([ordinal_targets_to_grade(row) for row in val_y_grade])
+            val_stage_true = np.array([ordinal_targets_to_grade(row) for row in val_y_stage])
+            thr_grade, best_g = _search_thresholds_for_decoder(val_grade_true, val_p_ge_grade_dec, bins=decoder_bins, objective=decoder_objective, head="grade")
+            thr_stage, best_s = _search_thresholds_for_decoder(val_stage_true, val_p_ge_stage_dec, bins=decoder_bins, objective=decoder_objective, head="stage")
+            decoder_search["threshold"] = {"grade_best": best_g, "stage_best": best_s}
+            val_used = True
+        grade_pred = _decode_threshold(p_ge_grade_dec, thr_grade)
+        stage_pred = _decode_threshold(p_ge_stage_dec, thr_stage)
+        decoder_summary["thresholds"] = {"grade": thr_grade, "stage": thr_stage}
+    elif mode in {"ev", "temp_ev"}:
+        ev_grade = _expected_value_from_pge(p_ge_grade_dec)
+        ev_stage = _expected_value_from_pge(p_ge_stage_dec)
+        val_ev_grade = _expected_value_from_pge(val_p_ge_grade_dec)
+        val_ev_stage = _expected_value_from_pge(val_p_ge_stage_dec)
+        val_grade_true = np.array([ordinal_targets_to_grade(row) for row in val_y_grade])
+        val_stage_true = np.array([ordinal_targets_to_grade(row) for row in val_y_stage])
+        cp_grade, best_g = _search_cutpoints_for_ev(val_grade_true, val_ev_grade, 4, decoder_bins, decoder_objective, "grade")
+        cp_stage, best_s = _search_cutpoints_for_ev(val_stage_true, val_ev_stage, 3, decoder_bins, decoder_objective, "stage")
+        grade_pred = _decode_ev(ev_grade, cp_grade)
+        stage_pred = _decode_ev(ev_stage, cp_stage)
+        decoder_summary["cutpoints"] = {"grade": cp_grade, "stage": cp_stage}
+        decoder_search["ev"] = {"grade_best": best_g, "stage_best": best_s}
+        val_used = True
+    elif mode != "non":
+        raise ValueError(f"Unsupported decodermode={decodermode}")
 
     prob_grade_any = 1.0 - pG[:, 0]
     prob_stage_any = 1.0 - pS[:, 0]
 
-    metrics = {}
-    metrics["MAE_grade"] = float(np.mean(np.abs(grade_pred - grades_true)))
-    metrics["MAE_stage"] = float(np.mean(np.abs(stage_pred - stages_true)))
-    from sklearn.metrics import cohen_kappa_score
-    metrics["QWK_grade"] = float(cohen_kappa_score(grades_true, grade_pred, weights="quadratic"))
-    metrics["QWK_stage"] = float(cohen_kappa_score(stages_true, stage_pred, weights="quadratic"))
-
+    metrics = {
+        "MAE_grade": float(np.mean(np.abs(grade_pred - grades_true))),
+        "MAE_stage": float(np.mean(np.abs(stage_pred - stages_true))),
+        "QWK_grade": _safe_kappa(grades_true, grade_pred),
+        "QWK_stage": _safe_kappa(stages_true, stage_pred),
+    }
     metrics["AUROC_grade_any_htn"] = safe_roc_auc((grades_true > 0).astype(int), prob_grade_any)
     metrics["AUROC_grade_ge1"] = safe_roc_auc((grades_true >= 1).astype(int), p_ge_grade[:, 0])
     metrics["AUROC_grade_ge2"] = safe_roc_auc((grades_true >= 2).astype(int), p_ge_grade[:, 1])
     metrics["AUROC_grade_ge3"] = safe_roc_auc((grades_true >= 3).astype(int), p_ge_grade[:, 2])
-
     metrics["AUROC_stage_any_htn"] = safe_roc_auc((stages_true > 0).astype(int), prob_stage_any)
     metrics["AUROC_stage_ge1"] = safe_roc_auc((stages_true >= 1).astype(int), p_ge_stage[:, 0])
     metrics["AUROC_stage_ge2"] = safe_roc_auc((stages_true >= 2).astype(int), p_ge_stage[:, 1])
 
     _plot_roc_curve((grades_true > 0).astype(int), prob_grade_any, "ROC grade any HTN", os.path.join(output_dir, "roc_grade_any_htn.png"))
-    _plot_roc_comparison([
-        ("grade>=1", (grades_true >= 1).astype(int), p_ge_grade[:, 0]),
-        ("grade>=2", (grades_true >= 2).astype(int), p_ge_grade[:, 1]),
-        ("grade>=3", (grades_true >= 3).astype(int), p_ge_grade[:, 2]),
-    ], "ROC Grade Comparison", os.path.join(output_dir, "roc_grade_comparison.png"))
+    _plot_roc_comparison([("grade>=1", (grades_true >= 1).astype(int), p_ge_grade[:, 0]), ("grade>=2", (grades_true >= 2).astype(int), p_ge_grade[:, 1]), ("grade>=3", (grades_true >= 3).astype(int), p_ge_grade[:, 2])], "ROC Grade Comparison", os.path.join(output_dir, "roc_grade_comparison.png"))
     cm_grade = confusion_matrix(grades_true, grade_pred, labels=[0, 1, 2, 3])
     _plot_confusion_matrix(cm_grade, ["0", "1", "2", "3"], "Grade Confmat", os.path.join(output_dir, "Confmat_grade.png"))
-
     _plot_roc_curve((stages_true > 0).astype(int), prob_stage_any, "ROC stage any HTN", os.path.join(output_dir, "roc_stage_any_htn.png"))
-    _plot_roc_comparison([
-        ("stage>=1", (stages_true >= 1).astype(int), p_ge_stage[:, 0]),
-        ("stage>=2", (stages_true >= 2).astype(int), p_ge_stage[:, 1]),
-    ], "ROC Stage Comparison", os.path.join(output_dir, "roc_stage_comparison.png"))
+    _plot_roc_comparison([("stage>=1", (stages_true >= 1).astype(int), p_ge_stage[:, 0]), ("stage>=2", (stages_true >= 2).astype(int), p_ge_stage[:, 1])], "ROC Stage Comparison", os.path.join(output_dir, "roc_stage_comparison.png"))
     cm_stage = confusion_matrix(stages_true, stage_pred, labels=[0, 1, 2])
     _plot_confusion_matrix(cm_stage, ["0", "1", "2"], "Stage Confmat", os.path.join(output_dir, "Confmat_stage.png"))
 
     y_any_grade = (grades_true > 0).astype(int)
-    _plot_calibration_curve(
-        y_any_grade,
-        prob_grade_any,
-        "Calibration any HTN (grade)",
-        os.path.join(output_dir, "calib_any_htn_grade.png"),
-        n_bins=10,
-    )
-    metrics["ECE"] = expected_calibration_error(y_any_grade, prob_grade_any, n_bins=10)
-    metrics["Brier"] = float(brier_score_loss(y_any_grade, prob_grade_any)) if len(np.unique(y_any_grade)) >= 2 else np.nan
-
+    _plot_calibration_curve(y_any_grade, prob_grade_any, "Calibration any HTN (grade)", os.path.join(output_dir, "calib_any_htn_grade.png"), n_bins=10)
+    metrics["ECE_grade_any_htn"] = expected_calibration_error(y_any_grade, prob_grade_any, n_bins=10)
+    metrics["Brier_grade_any_htn"] = float(brier_score_loss(y_any_grade, prob_grade_any)) if len(np.unique(y_any_grade)) >= 2 else np.nan
     y_any_stage = (stages_true > 0).astype(int)
-    _plot_calibration_curve(
-        y_any_stage,
-        prob_stage_any,
-        "Calibration any HTN (stage)",
-        os.path.join(output_dir, "calib_any_htn_stage.png"),
-        n_bins=10,
-    )
-    metrics["ECE_stage"] = expected_calibration_error(y_any_stage, prob_stage_any, n_bins=10)
-    metrics["Brier_stage"] = float(brier_score_loss(y_any_stage, prob_stage_any)) if len(np.unique(y_any_stage)) >= 2 else np.nan
+    _plot_calibration_curve(y_any_stage, prob_stage_any, "Calibration any HTN (stage)", os.path.join(output_dir, "calib_any_htn_stage.png"), n_bins=10)
+    metrics["ECE_stage_any_htn"] = expected_calibration_error(y_any_stage, prob_stage_any, n_bins=10)
+    metrics["Brier_stage_any_htn"] = float(brier_score_loss(y_any_stage, prob_stage_any)) if len(np.unique(y_any_stage)) >= 2 else np.nan
 
     joint_gt_name = [_joint_name_from_pred(g, s) for g, s in zip(grades_true, stages_true)]
     joint_pred_name = [_joint_name_from_pred(g, s) for g, s in zip(grade_pred, stage_pred)]
+    joint_pred_raw = [_joint_name_from_pred(g, s) for g, s in zip(grade_pred_raw, stage_pred_raw)]
     invalid_flag = np.array([v == "INV" for v in joint_pred_name])
+    invalid_flag_raw = np.array([v == "INV" for v in joint_pred_raw])
     invalid_type = [f"g{g}_s{s}" if inv else "" for g, s, inv in zip(grade_pred, stage_pred, invalid_flag)]
+    invalid_type_raw = [f"g{g}_s{s}" if inv else "" for g, s, inv in zip(grade_pred_raw, stage_pred_raw, invalid_flag_raw)]
     metrics["invalid_rate"] = float(invalid_flag.mean()) if len(invalid_flag) > 0 else np.nan
+    metrics["sep_head_mode"] = str(sep_head_mode)
+    metrics["coarse_to_fine_enabled"] = bool(str(sep_head_mode).lower() == "coarse_fine")
+    metrics["loss_w_anyhtn"] = float(loss_w_anyhtn)
+    metrics["coarse_auc_loss_mode"] = str(coarse_auc_loss_mode)
+    metrics["loss_w_anyhtn_auc"] = float(loss_w_anyhtn_auc)
+    metrics["auc_margin"] = float(auc_margin)
+    metrics["auc_pair_subsample"] = int(auc_pair_subsample)
+    metrics["fine_soft_label_mode"] = str(fine_soft_label_mode)
+    metrics["grade_soft_center"] = float(grade_soft_center)
+    metrics["stage_label_smoothing"] = float(stage_label_smoothing)
+    metrics["loss_w_grade_soft"] = float(loss_w_grade_soft)
+    metrics["loss_w_stage_smooth"] = float(loss_w_stage_smooth)
+    if pos_weight_anyhtn is not None:
+        metrics["pos_weight_anyhtn"] = pos_weight_anyhtn
+    if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
+        p_any = np.asarray(aux_scores["p_anyhtn_coarse"]).reshape(-1)
+        y_any = (grades_true > 0).astype(int)
+        metrics["AUROC_anyhtn_coarse"] = safe_roc_auc(y_any, p_any)
+        metrics["ECE_anyhtn_coarse"] = expected_calibration_error(y_any, p_any, n_bins=10)
+        metrics["Brier_anyhtn_coarse"] = float(brier_score_loss(y_any, p_any)) if len(np.unique(y_any)) >= 2 else np.nan
+        metrics["coarse_head_positive_rate_pred"] = float((p_any >= 0.5).mean())
+        metrics["coarse_head_positive_rate_true"] = float(y_any.mean())
+    metrics.update({"decoder_mode": mode, "decoder_objective": decoder_objective, "decoder_used_saved_thresholds": bool(used_saved), "decoder_has_val_search": bool(val_used)})
+    if temp_grade is not None:
+        metrics["temperature_grade"] = float(temp_grade)
+    if temp_stage is not None:
+        metrics["temperature_stage"] = float(temp_stage)
+    if decoder_keep_raw_metrics:
+        metrics.update({
+            "MAE_grade_raw": float(np.mean(np.abs(grade_pred_raw - grades_true))),
+            "MAE_stage_raw": float(np.mean(np.abs(stage_pred_raw - stages_true))),
+            "QWK_grade_raw": _safe_kappa(grades_true, grade_pred_raw),
+            "QWK_stage_raw": _safe_kappa(stages_true, stage_pred_raw),
+            "macro_f1_grade_raw": float(f1_score(grades_true, grade_pred_raw, average="macro", zero_division=0)),
+            "macro_f1_stage_raw": float(f1_score(stages_true, stage_pred_raw, average="macro", zero_division=0)),
+            "invalid_rate_raw": float(invalid_flag_raw.mean()) if len(invalid_flag_raw) > 0 else np.nan,
+        })
 
     labels7 = ["00", "11", "12", "21", "22", "32", "INV"]
     map7 = {k: i for i, k in enumerate(labels7)}
@@ -1126,91 +1361,97 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-
     cnt = {}
     for t in invalid_type:
         if t:
             cnt[t] = cnt.get(t, 0) + 1
     fig, ax = plt.subplots(figsize=(6, 4))
     if cnt:
-        ks = list(cnt.keys())
-        vs = [cnt[k] for k in ks]
-        ax.bar(ks, vs)
+        ax.bar(list(cnt.keys()), [cnt[k] for k in cnt.keys()])
         ax.tick_params(axis='x', rotation=45)
     ax.set_title("Invalid type histogram")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "invalid_type_hist.png"), dpi=200)
     plt.close(fig)
 
+    ev_grade_score = _expected_value_from_pge(p_ge_grade_dec)
+    ev_stage_score = _expected_value_from_pge(p_ge_stage_dec)
     rows = []
     for i in range(len(grades_true)):
-        rows.append({
+        row = {
             "Path": path_list[i] if path_list is not None and i < len(path_list) else "",
-            "grade_gt": int(grades_true[i]),
-            "stage_gt": int(stages_true[i]),
-            "grade_pred": int(grade_pred[i]),
-            "stage_pred": int(stage_pred[i]),
-            "prob_grade_any_htn": float(prob_grade_any[i]),
-            "prob_stage_any_htn": float(prob_stage_any[i]),
-            "joint_gt": joint_gt_name[i],
-            "joint_pred": joint_pred_name[i],
-            "invalid_flag": int(invalid_flag[i]),
-            "invalid_type": invalid_type[i],
-            "p_grade_ge1": float(p_ge_grade[i, 0]),
-            "p_grade_ge2": float(p_ge_grade[i, 1]),
-            "p_grade_ge3": float(p_ge_grade[i, 2]),
-            "p_stage_ge1": float(p_ge_stage[i, 0]),
-            "p_stage_ge2": float(p_ge_stage[i, 1]),
-        })
+            "grade_gt": int(grades_true[i]), "stage_gt": int(stages_true[i]),
+            "grade_pred": int(grade_pred[i]), "stage_pred": int(stage_pred[i]),
+            "grade_pred_raw": int(grade_pred_raw[i]), "stage_pred_raw": int(stage_pred_raw[i]),
+            "grade_pred_final": int(grade_pred[i]), "stage_pred_final": int(stage_pred[i]),
+            "prob_grade_any_htn": float(prob_grade_any[i]), "prob_stage_any_htn": float(prob_stage_any[i]),
+            "joint_gt": joint_gt_name[i], "joint_pred": joint_pred_name[i],
+            "joint_pred_raw": joint_pred_raw[i], "joint_pred_final": joint_pred_name[i],
+            "invalid_flag": int(invalid_flag[i]), "invalid_type": invalid_type[i],
+            "invalid_flag_raw": int(invalid_flag_raw[i]), "invalid_flag_final": int(invalid_flag[i]),
+            "invalid_type_raw": invalid_type_raw[i], "invalid_type_final": invalid_type[i],
+            "p_grade_ge1": float(p_ge_grade[i, 0]), "p_grade_ge2": float(p_ge_grade[i, 1]), "p_grade_ge3": float(p_ge_grade[i, 2]),
+            "p_stage_ge1": float(p_ge_stage[i, 0]), "p_stage_ge2": float(p_ge_stage[i, 1]),
+            "grade_ge1_score": float(p_ge_grade_dec[i, 0]), "grade_ge2_score": float(p_ge_grade_dec[i, 1]), "grade_ge3_score": float(p_ge_grade_dec[i, 2]),
+            "stage_ge1_score": float(p_ge_stage_dec[i, 0]), "stage_ge2_score": float(p_ge_stage_dec[i, 1]),
+            "decoder_mode": mode,
+            "sep_head_mode": str(sep_head_mode),
+        }
+        if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
+            row["p_anyhtn_coarse"] = float(np.asarray(aux_scores["p_anyhtn_coarse"]).reshape(-1)[i])
+            row["coarse_pred_raw"] = int(row["p_anyhtn_coarse"] >= 0.5)
+        if isinstance(aux_scores, dict) and "grade_pos_probs" in aux_scores:
+            gpp = np.asarray(aux_scores["grade_pos_probs"])
+            row["grade_pos_cond_prob_1"] = float(gpp[i, 0])
+            row["grade_pos_cond_prob_2"] = float(gpp[i, 1])
+            row["grade_pos_cond_prob_3"] = float(gpp[i, 2])
+        if isinstance(aux_scores, dict) and "stage_pos_probs" in aux_scores:
+            spp = np.asarray(aux_scores["stage_pos_probs"])
+            row["stage_pos_cond_prob_1"] = float(spp[i, 0])
+            row["stage_pos_cond_prob_2"] = float(spp[i, 1])
+        if mode in {"ev", "temp_ev"}:
+            row["grade_ev_score"] = float(ev_grade_score[i]); row["stage_ev_score"] = float(ev_stage_score[i])
+        if mode in {"threshold", "temp_threshold"} and "thresholds" in decoder_summary:
+            row["grade_threshold_t1"], row["grade_threshold_t2"], row["grade_threshold_t3"] = decoder_summary["thresholds"]["grade"]
+            row["stage_threshold_u1"], row["stage_threshold_u2"] = decoder_summary["thresholds"]["stage"]
+        rows.append(row)
 
     report_lines = [
-        "[sep_v1 test summary]",
-        f"N={len(grades_true)}",
-        "",
-        "[scalar metrics]",
-        f"MAE_grade={metrics['MAE_grade']:.6f}",
-        f"QWK_grade={metrics['QWK_grade']:.6f}",
-        f"MAE_stage={metrics['MAE_stage']:.6f}",
-        f"QWK_stage={metrics['QWK_stage']:.6f}",
-        f"AUROC_grade_any_htn={metrics['AUROC_grade_any_htn']}",
-        f"AUROC_grade_ge1={metrics['AUROC_grade_ge1']}",
-        f"AUROC_grade_ge2={metrics['AUROC_grade_ge2']}",
-        f"AUROC_grade_ge3={metrics['AUROC_grade_ge3']}",
-        f"AUROC_stage_any_htn={metrics['AUROC_stage_any_htn']}",
-        f"AUROC_stage_ge1={metrics['AUROC_stage_ge1']}",
+        "[sep_v1 test summary]", f"N={len(grades_true)}", "", "[scalar metrics]",
+        f"MAE_grade={metrics['MAE_grade']:.6f}", f"QWK_grade={metrics['QWK_grade']:.6f}",
+        f"MAE_stage={metrics['MAE_stage']:.6f}", f"QWK_stage={metrics['QWK_stage']:.6f}",
+        f"AUROC_grade_any_htn={metrics['AUROC_grade_any_htn']}", f"AUROC_grade_ge1={metrics['AUROC_grade_ge1']}",
+        f"AUROC_grade_ge2={metrics['AUROC_grade_ge2']}", f"AUROC_grade_ge3={metrics['AUROC_grade_ge3']}",
+        f"AUROC_stage_any_htn={metrics['AUROC_stage_any_htn']}", f"AUROC_stage_ge1={metrics['AUROC_stage_ge1']}",
         f"AUROC_stage_ge2={metrics['AUROC_stage_ge2']}",
-        f"ECE_grade_any_htn={metrics['ECE']}",
-        f"Brier_grade_any_htn={metrics['Brier']}",
-        f"ECE_stage_any_htn={metrics['ECE_stage']}",
-        f"Brier_stage_any_htn={metrics['Brier_stage']}",
-        f"invalid_rate={metrics['invalid_rate']}",
-        "",
-        "[Confmat_grade labels=0,1,2,3]",
-        np.array2string(cm_grade, separator=', '),
-        "",
-        "[Confmat_stage labels=0,1,2]",
-        np.array2string(cm_stage, separator=', '),
-        "",
-        "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]",
-        np.array2string(cm7, separator=', '),
-        "",
-        "[invalid_type_count]",
-        json.dumps(cnt, ensure_ascii=False, sort_keys=True),
-        "",
-        "[generated_figures]",
-        "roc_grade_any_htn.png",
-        "roc_grade_comparison.png",
-        "Confmat_grade.png",
-        "roc_stage_any_htn.png",
-        "roc_stage_comparison.png",
-        "Confmat_stage.png",
-        "calib_any_htn_grade.png",
-        "calib_any_htn_stage.png",
-        "Confmat_grade_stage.png",
-        "invalid_type_hist.png",
+        f"ECE_grade_any_htn={metrics['ECE_grade_any_htn']}", f"Brier_grade_any_htn={metrics['Brier_grade_any_htn']}",
+        f"ECE_stage_any_htn={metrics['ECE_stage_any_htn']}", f"Brier_stage_any_htn={metrics['Brier_stage_any_htn']}",
+        f"invalid_rate={metrics['invalid_rate']}", "", "[Decoder Summary]",
+        json.dumps({**decoder_summary, "used_saved_thresholds": used_saved, "has_val_search": val_used, "temperature_grade": temp_grade, "temperature_stage": temp_stage}, ensure_ascii=False),
+        "", "[Coarse-to-Fine Summary]", f"sep_head_mode={sep_head_mode}", f"AUROC_anyhtn_coarse={metrics.get('AUROC_anyhtn_coarse')}",
+        f"coarse_auc_loss_mode={metrics.get('coarse_auc_loss_mode')}", f"loss_w_anyhtn_auc={metrics.get('loss_w_anyhtn_auc')}",
+        f"auc_margin={metrics.get('auc_margin')}", f"auc_pair_subsample={metrics.get('auc_pair_subsample')}",
+        f"fine_soft_label_mode={metrics.get('fine_soft_label_mode')}", f"grade_soft_center={metrics.get('grade_soft_center')}",
+        f"stage_label_smoothing={metrics.get('stage_label_smoothing')}", f"loss_w_grade_soft={metrics.get('loss_w_grade_soft')}",
+        f"loss_w_stage_smooth={metrics.get('loss_w_stage_smooth')}",
+        "", "[Confmat_grade labels=0,1,2,3]", np.array2string(cm_grade, separator=', '), "", "[Confmat_stage labels=0,1,2]", np.array2string(cm_stage, separator=', '), "",
+        "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]", np.array2string(cm7, separator=', '), "", "[invalid_type_count]", json.dumps(cnt, ensure_ascii=False, sort_keys=True), "", "[generated_figures]",
+        "roc_grade_any_htn.png", "roc_grade_comparison.png", "Confmat_grade.png", "roc_stage_any_htn.png", "roc_stage_comparison.png", "Confmat_stage.png", "calib_any_htn_grade.png", "calib_any_htn_stage.png", "Confmat_grade_stage.png", "invalid_type_hist.png",
     ]
+    if decoder_keep_raw_metrics:
+        report_lines.extend(["", "[Raw vs Final Comparison]", f"QWK_grade_raw={metrics.get('QWK_grade_raw')}; QWK_grade_final={metrics.get('QWK_grade')}", f"QWK_stage_raw={metrics.get('QWK_stage_raw')}; QWK_stage_final={metrics.get('QWK_stage')}", f"MAE_grade_raw={metrics.get('MAE_grade_raw')}; MAE_grade_final={metrics.get('MAE_grade')}", f"MAE_stage_raw={metrics.get('MAE_stage_raw')}; MAE_stage_final={metrics.get('MAE_stage')}", f"invalid_rate_raw={metrics.get('invalid_rate_raw')}; invalid_rate_final={metrics.get('invalid_rate')}"])
+
+    if decoder_save_debug:
+        with open(os.path.join(output_dir, "decoder_config.json"), "w", encoding="utf-8") as f:
+            json.dump({**decoder_summary, "used_saved_thresholds": used_saved, "has_val_search": val_used, "temperature_grade": temp_grade, "temperature_stage": temp_stage}, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(output_dir, "decoder_search_summary.json"), "w", encoding="utf-8") as f:
+            json.dump(decoder_search, f, indent=2, ensure_ascii=False)
+        if decoder_keep_raw_metrics:
+            with open(os.path.join(output_dir, "raw_vs_final_metrics.json"), "w", encoding="utf-8") as f:
+                json.dump({"raw": {k: v for k, v in metrics.items() if k.endswith("_raw")}, "final": {"MAE_grade": metrics["MAE_grade"], "QWK_grade": metrics["QWK_grade"], "MAE_stage": metrics["MAE_stage"], "QWK_stage": metrics["QWK_stage"], "invalid_rate": metrics["invalid_rate"]}}, f, indent=2, ensure_ascii=False)
 
     return metrics, rows, report_lines
+
 
 def save_thresholds_json(path, thresholds):
     # 将 numpy 标量转换为 Python float，避免 json 序列化报错
