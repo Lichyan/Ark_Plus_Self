@@ -197,7 +197,11 @@ def get_args_parser():
     parser.add_option("--grade_soft_center", dest="grade_soft_center", help="center mass for positive-grade soft labels", default=0.85, type="float")
     parser.add_option("--stage_label_smoothing", dest="stage_label_smoothing", help="label smoothing epsilon for positive-stage head", default=0.05, type="float")
     parser.add_option("--loss_w_grade_soft", dest="loss_w_grade_soft", help="aux soft-label loss weight for positive-grade head", default=0.2, type="float")
+    parser.add_option("--loss_w_stage_soft", dest="loss_w_stage_soft", help="aux soft-label loss weight for full-stage head in v1", default=0.1, type="float")
     parser.add_option("--loss_w_stage_smooth", dest="loss_w_stage_smooth", help="optional scale for stage smoothing BCE", default=1.0, type="float")
+    parser.add_option("--v1_soft_label_mode", dest="v1_soft_label_mode", help="none|full (apply full-grade/full-stage soft distribution loss for v1)", default="none", type="string")
+    parser.add_option("--grade_soft_scheme", dest="grade_soft_scheme", help="soft target scheme for v1 grade full distribution", default="asym_v1", type="string")
+    parser.add_option("--stage_soft_scheme", dest="stage_soft_scheme", help="soft target scheme for v1 stage full distribution", default="asym_v1", type="string")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
@@ -603,6 +607,7 @@ def main(args):
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         label_names = ["grade>=1", "grade>=2", "grade>=3", "stage>=1", "stage>=2"]
+        need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
         if args.mode == "train":
             dataset_train = advCheX_hyp_multi_grade_stage_v1(
                 images_path=args.data_dir,
@@ -615,8 +620,9 @@ def main(args):
                 ),
                 few_shot=args.few_shot,
             )
+            val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
             dataset_val = advCheX_hyp_multi_grade_stage_v1(
-                images_path=args.data_dir,
+                images_path=val_images_root,
                 file_path=args.val_list,
                 augment=build_transform_classification(
                     normalize=args.normalization,
@@ -627,7 +633,21 @@ def main(args):
             )
         else:
             dataset_train = None
-            dataset_val = None
+            if need_decoder_val:
+                val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
+                print(f"[v1] val_images_root={val_images_root}, val_list={args.val_list}", flush=True)
+                dataset_val = advCheX_hyp_multi_grade_stage_v1(
+                    images_path=val_images_root,
+                    file_path=args.val_list,
+                    augment=build_transform_classification(
+                        normalize=args.normalization,
+                        mode="valid",
+                        crop_size=args.input_size,
+                        resize=args.img_size
+                    ),
+                )
+            else:
+                dataset_val = None
 
         dataset_test = advCheX_hyp_multi_grade_stage_v1(
             images_path=args.data_dir,

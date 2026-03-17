@@ -1183,7 +1183,9 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
                              sep_head_mode="flat", aux_scores=None, loss_w_anyhtn=1.0, pos_weight_anyhtn=None,
                              coarse_auc_loss_mode="none", loss_w_anyhtn_auc=0.0, auc_margin=1.0, auc_pair_subsample=256,
                              fine_soft_label_mode="none", grade_soft_center=0.85, stage_label_smoothing=0.05,
-                             loss_w_grade_soft=0.2, loss_w_stage_smooth=1.0):
+                             loss_w_grade_soft=0.2, loss_w_stage_soft=0.1, loss_w_stage_smooth=1.0,
+                             dataset_tag="sep_v1", v1_soft_label_mode="none", grade_soft_scheme="asym_v1", stage_soft_scheme="asym_v1",
+                             lambda_incomp=0.0, lambda_joint=0.0, joint_gate="htn_only", joint_detach="both", incomp_mode="mask_sum"):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
     p_ge_grade = np.asarray(p_ge_grade)
@@ -1324,7 +1326,19 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     metrics["grade_soft_center"] = float(grade_soft_center)
     metrics["stage_label_smoothing"] = float(stage_label_smoothing)
     metrics["loss_w_grade_soft"] = float(loss_w_grade_soft)
+    metrics["loss_w_stage_soft"] = float(loss_w_stage_soft)
     metrics["loss_w_stage_smooth"] = float(loss_w_stage_smooth)
+    metrics["v1_soft_label_mode"] = str(v1_soft_label_mode)
+    metrics["grade_soft_scheme"] = str(grade_soft_scheme)
+    metrics["stage_soft_scheme"] = str(stage_soft_scheme)
+    metrics["lambda_incomp"] = float(lambda_incomp)
+    metrics["lambda_joint"] = float(lambda_joint)
+    metrics["joint_gate"] = str(joint_gate)
+    metrics["joint_detach"] = str(joint_detach)
+    metrics["incomp_mode"] = str(incomp_mode)
+    metrics["decoder_mode"] = str(mode)
+    metrics["decoder_objective"] = str(decoder_objective)
+    metrics["decoder_keep_raw_metrics"] = bool(decoder_keep_raw_metrics)
     if pos_weight_anyhtn is not None:
         metrics["pos_weight_anyhtn"] = pos_weight_anyhtn
     if isinstance(aux_scores, dict) and "p_anyhtn_coarse" in aux_scores:
@@ -1417,7 +1431,7 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
         rows.append(row)
 
     report_lines = [
-        "[sep_v1 test summary]", f"N={len(grades_true)}", "", "[scalar metrics]",
+        f"[{dataset_tag} test summary]", f"N={len(grades_true)}", "", "[scalar metrics]",
         f"MAE_grade={metrics['MAE_grade']:.6f}", f"QWK_grade={metrics['QWK_grade']:.6f}",
         f"MAE_stage={metrics['MAE_stage']:.6f}", f"QWK_stage={metrics['QWK_stage']:.6f}",
         f"AUROC_grade_any_htn={metrics['AUROC_grade_any_htn']}", f"AUROC_grade_ge1={metrics['AUROC_grade_ge1']}",
@@ -1433,7 +1447,12 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
         f"auc_margin={metrics.get('auc_margin')}", f"auc_pair_subsample={metrics.get('auc_pair_subsample')}",
         f"fine_soft_label_mode={metrics.get('fine_soft_label_mode')}", f"grade_soft_center={metrics.get('grade_soft_center')}",
         f"stage_label_smoothing={metrics.get('stage_label_smoothing')}", f"loss_w_grade_soft={metrics.get('loss_w_grade_soft')}",
-        f"loss_w_stage_smooth={metrics.get('loss_w_stage_smooth')}",
+        f"loss_w_stage_soft={metrics.get('loss_w_stage_soft')}", f"loss_w_stage_smooth={metrics.get('loss_w_stage_smooth')}",
+        "", "[v1 Soft-Label Summary]", f"v1_soft_label_mode={metrics.get('v1_soft_label_mode')}",
+        f"grade_soft_scheme={metrics.get('grade_soft_scheme')}", f"stage_soft_scheme={metrics.get('stage_soft_scheme')}",
+        f"loss_w_grade_soft={metrics.get('loss_w_grade_soft')}", f"loss_w_stage_soft={metrics.get('loss_w_stage_soft')}",
+        "", "[v1 Joint/Incomp Summary]", f"lambda_incomp={metrics.get('lambda_incomp')}", f"lambda_joint={metrics.get('lambda_joint')}",
+        f"joint_gate={metrics.get('joint_gate')}", f"joint_detach={metrics.get('joint_detach')}", f"incomp_mode={metrics.get('incomp_mode')}",
         "", "[Confmat_grade labels=0,1,2,3]", np.array2string(cm_grade, separator=', '), "", "[Confmat_stage labels=0,1,2]", np.array2string(cm_stage, separator=', '), "",
         "[Confmat_grade_stage labels=00,11,12,21,22,32,INV]", np.array2string(cm7, separator=', '), "", "[invalid_type_count]", json.dumps(cnt, ensure_ascii=False, sort_keys=True), "", "[generated_figures]",
         "roc_grade_any_htn.png", "roc_grade_comparison.png", "Confmat_grade.png", "roc_stage_any_htn.png", "roc_stage_comparison.png", "Confmat_stage.png", "calib_any_htn_grade.png", "calib_any_htn_stage.png", "Confmat_grade_stage.png", "invalid_type_hist.png",

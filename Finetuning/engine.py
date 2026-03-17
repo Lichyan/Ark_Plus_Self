@@ -110,7 +110,11 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.grade_soft_center = 0.85
         self.stage_label_smoothing = 0.05
         self.loss_w_grade_soft = 0.2
+        self.loss_w_stage_soft = 0.1
         self.loss_w_stage_smooth = 1.0
+        self.v1_soft_label_mode = "none"
+        self.grade_soft_scheme = "asym_v1"
+        self.stage_soft_scheme = "asym_v1"
         self.use_joint_train = use_joint_train
         self.lambda_incomp = lambda_incomp
         self.lambda_joint = lambda_joint
@@ -198,6 +202,67 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         eps = float(eps)
         y = stage_pos_bin.float().view(-1, 1)
         return y * (1.0 - eps) + (1.0 - y) * eps
+
+    def _build_full_grade_probs_from_ge(self, ge_g):
+        pG0 = 1.0 - ge_g[:, 0]
+        pG1 = torch.clamp(ge_g[:, 0] - ge_g[:, 1], 0.0, 1.0)
+        pG2 = torch.clamp(ge_g[:, 1] - ge_g[:, 2], 0.0, 1.0)
+        pG3 = torch.clamp(ge_g[:, 2], 0.0, 1.0)
+        pG = torch.stack([pG0, pG1, pG2, pG3], dim=1)
+        return pG / pG.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    def _build_full_stage_probs_from_ge(self, ge_s):
+        pS0 = 1.0 - ge_s[:, 0]
+        pS1 = torch.clamp(ge_s[:, 0] - ge_s[:, 1], 0.0, 1.0)
+        pS2 = torch.clamp(ge_s[:, 1], 0.0, 1.0)
+        pS = torch.stack([pS0, pS1, pS2], dim=1)
+        return pS / pS.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    def _build_v1_grade_soft_targets(self, raw_grade, scheme="asym_v1"):
+        y = torch.zeros((raw_grade.shape[0], 4), dtype=torch.float32, device=raw_grade.device)
+        cls = raw_grade.long().clamp(min=0, max=3)
+        # grade0: [0.95, 0.05, 0.00, 0.00]
+        m0 = cls == 0
+        y[m0, 0] = 0.95
+        y[m0, 1] = 0.05
+        # grade1: [0.10, 0.80, 0.10, 0.00]
+        m1 = cls == 1
+        y[m1, 0] = 0.10
+        y[m1, 1] = 0.80
+        y[m1, 2] = 0.10
+        # grade2: [0.00, 0.10, 0.80, 0.10]
+        m2 = cls == 2
+        y[m2, 1] = 0.10
+        y[m2, 2] = 0.80
+        y[m2, 3] = 0.10
+        # grade3: [0.00, 0.00, 0.05, 0.95]
+        m3 = cls == 3
+        y[m3, 2] = 0.05
+        y[m3, 3] = 0.95
+        return y
+
+    def _build_v1_stage_soft_targets(self, raw_stage, scheme="asym_v1"):
+        y = torch.zeros((raw_stage.shape[0], 3), dtype=torch.float32, device=raw_stage.device)
+        cls = raw_stage.long().clamp(min=0, max=2)
+        # stage0: [0.95, 0.05, 0.00]
+        m0 = cls == 0
+        y[m0, 0] = 0.95
+        y[m0, 1] = 0.05
+        # stage1: [0.10, 0.80, 0.10]
+        m1 = cls == 1
+        y[m1, 0] = 0.10
+        y[m1, 1] = 0.80
+        y[m1, 2] = 0.10
+        # stage2: [0.00, 0.05, 0.95]
+        m2 = cls == 2
+        y[m2, 1] = 0.05
+        y[m2, 2] = 0.95
+        return y
+
+    def _compute_soft_ce(self, p, y_soft):
+        p = p.clamp_min(1e-8)
+        return (-(y_soft * torch.log(p)).sum(dim=1)).mean()
+
 
     def set_epoch(self, epoch):
         self.current_epoch = epoch
@@ -315,11 +380,34 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         y_grade = targets["y_grade"]
         y_stage = targets["y_stage"]
         if str(self.ordinal_mode).lower() == "corn":
-            loss_grade = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
-            loss_stage = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
+            loss_grade_base = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
+            loss_stage_base = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
+            ge_g = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+            ge_s = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
         else:
-            loss_grade = self.loss_grade(logits_grade, y_grade)
-            loss_stage = self.loss_stage(logits_stage, y_stage)
+            loss_grade_base = self.loss_grade(logits_grade, y_grade)
+            loss_stage_base = self.loss_stage(logits_stage, y_stage)
+            ge_g = torch.sigmoid(logits_grade)
+            ge_s = torch.sigmoid(logits_stage)
+
+        loss_grade_soft = loss_grade_base.new_tensor(0.0)
+        loss_stage_soft = loss_stage_base.new_tensor(0.0)
+        if str(getattr(self, "v1_soft_label_mode", "none") or "none").lower() == "full":
+            raw_grade = targets.get("raw_grade")
+            raw_stage = targets.get("raw_stage")
+            if raw_grade is None:
+                raw_grade = torch.sum(y_grade > 0.5, dim=1).long()
+            if raw_stage is None:
+                raw_stage = torch.sum(y_stage > 0.5, dim=1).long()
+            pG_full = self._build_full_grade_probs_from_ge(ge_g)
+            pS_full = self._build_full_stage_probs_from_ge(ge_s)
+            y_grade_soft = self._build_v1_grade_soft_targets(raw_grade, getattr(self, "grade_soft_scheme", "asym_v1"))
+            y_stage_soft = self._build_v1_stage_soft_targets(raw_stage, getattr(self, "stage_soft_scheme", "asym_v1"))
+            loss_grade_soft = self._compute_soft_ce(pG_full, y_grade_soft)
+            loss_stage_soft = self._compute_soft_ce(pS_full, y_stage_soft)
+
+        loss_grade = loss_grade_base + float(getattr(self, "loss_w_grade_soft", 0.2) or 0.0) * loss_grade_soft
+        loss_stage = loss_stage_base + float(getattr(self, "loss_w_stage_soft", 0.1) or 0.0) * loss_stage_soft
         loss = self.w_grade * loss_grade + self.w_stage * loss_stage
         loss_incomp = torch.tensor(0.0, device=loss.device)
         loss_joint = torch.tensor(0.0, device=loss.device)
@@ -327,23 +415,9 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         mean_p_joint_true = torch.tensor(0.0, device=loss.device)
         mean_neglog_p_joint_true = torch.tensor(0.0, device=loss.device)
         if self.use_joint_train and (self.lambda_incomp > 0 or self.lambda_joint > 0):
-            if str(self.ordinal_mode).lower() == "corn":
-                q_g = torch.sigmoid(logits_grade)
-                q_s = torch.sigmoid(logits_stage)
-                ge_g = corn_marginal_ge_probs(q_g)
-                ge_s = corn_marginal_ge_probs(q_s)
-            else:
-                ge_g = torch.sigmoid(logits_grade)
-                ge_s = torch.sigmoid(logits_stage)
-            pG0 = 1 - ge_g[:, 0]
-            pG1 = torch.clamp(ge_g[:, 0] - ge_g[:, 1], 0, 1)
-            pG2 = torch.clamp(ge_g[:, 1] - ge_g[:, 2], 0, 1)
-            pG3 = torch.clamp(ge_g[:, 2], 0, 1)
-            pG = torch.stack([pG0, pG1, pG2, pG3], dim=1)
-            pS0 = 1 - ge_s[:, 0]
-            pS1 = torch.clamp(ge_s[:, 0] - ge_s[:, 1], 0, 1)
-            pS2 = torch.clamp(ge_s[:, 1], 0, 1)
-            pS = torch.stack([pS0, pS1, pS2], dim=1)
+            # ge_g/ge_s already computed above for both CORN/CORAL branches
+            pG = self._build_full_grade_probs_from_ge(ge_g)
+            pS = self._build_full_stage_probs_from_ge(ge_s)
             pG = pG.detach() if self.joint_detach == "grade" else pG
             pS = pS.detach() if self.joint_detach == "stage" else pS
 
@@ -408,6 +482,10 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.last_components = {
             "loss_grade": float(loss_grade.detach().cpu().item()),
             "loss_stage": float(loss_stage.detach().cpu().item()),
+            "loss_grade_base": float(loss_grade_base.detach().cpu().item()),
+            "loss_stage_base": float(loss_stage_base.detach().cpu().item()),
+            "loss_grade_soft": float(loss_grade_soft.detach().cpu().item()),
+            "loss_stage_soft": float(loss_stage_soft.detach().cpu().item()),
             "loss_incomp": float(loss_incomp.detach().cpu().item()),
             "loss_joint": float(loss_joint.detach().cpu().item()),
             "loss_total": float(loss.detach().cpu().item()),
@@ -659,7 +737,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.grade_soft_center = float(getattr(args, "grade_soft_center", 0.85) or 0.85)
         criterion.stage_label_smoothing = float(getattr(args, "stage_label_smoothing", 0.05) or 0.05)
         criterion.loss_w_grade_soft = float(getattr(args, "loss_w_grade_soft", 0.2) or 0.2)
+        criterion.loss_w_stage_soft = float(getattr(args, "loss_w_stage_soft", 0.1) or 0.1)
         criterion.loss_w_stage_smooth = float(getattr(args, "loss_w_stage_smooth", 1.0) or 1.0)
+        criterion.v1_soft_label_mode = str(getattr(args, "v1_soft_label_mode", "none") or "none").lower()
+        criterion.grade_soft_scheme = str(getattr(args, "grade_soft_scheme", "asym_v1") or "asym_v1").lower()
+        criterion.stage_soft_scheme = str(getattr(args, "stage_soft_scheme", "asym_v1") or "asym_v1").lower()
         if getattr(args, "pos_weight_anyhtn", None):
           try:
             criterion.pos_weight_anyhtn = torch.tensor(float(args.pos_weight_anyhtn), dtype=torch.float32, device=device)
@@ -669,6 +751,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           f"use MultiHeadOrdinalLoss, pos_weight_grade={pos_weight_grade}, pos_weight_stage={pos_weight_stage}",
           flush=True,
         )
+        if args.data_set == "advCheX_hyp_multi_grade_stage_v1":
+          print(
+            f"[v1 soft_label] mode={criterion.v1_soft_label_mode} grade_scheme={criterion.grade_soft_scheme} "
+            f"stage_scheme={criterion.stage_soft_scheme} loss_w_grade_soft={criterion.loss_w_grade_soft} "
+            f"loss_w_stage_soft={criterion.loss_w_stage_soft}",
+            flush=True,
+          )
         if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
           print(
             f"[sep_v1 coarse_auc] mode={criterion.coarse_auc_loss_mode} alpha={criterion.loss_w_anyhtn_auc} "
@@ -1131,7 +1220,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             if "stage_pos_probs" in p_test:
               aux_scores["stage_pos_probs"] = p_test["stage_pos_probs"].cpu().numpy()
 
-          if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1194,7 +1283,17 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               grade_soft_center=getattr(args, "grade_soft_center", 0.85),
               stage_label_smoothing=getattr(args, "stage_label_smoothing", 0.05),
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
+              loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else "v1"),
+              v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
+              grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
+              stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
+              lambda_incomp=getattr(args, "lambda_incomp", 0.0),
+              lambda_joint=getattr(args, "lambda_joint", 0.0),
+              joint_gate=getattr(args, "joint_gate", "htn_only"),
+              joint_detach=getattr(args, "joint_detach", "both"),
+              incomp_mode=getattr(args, "incomp_mode", "mask_sum"),
             )
             with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
               if pred_rows:
