@@ -264,6 +264,81 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         return (-(y_soft * torch.log(p)).sum(dim=1)).mean()
 
 
+    def _v2_soft_joint_factor(self):
+        start_epoch = int(getattr(self, "v2_soft_joint_start_epoch", 5) or 5)
+        warmup_epochs = int(getattr(self, "v2_soft_joint_warmup_epochs", 5) or 5)
+        if self.current_epoch < start_epoch:
+            return 0.0
+        if warmup_epochs <= 0:
+            return 1.0
+        if self.current_epoch >= start_epoch + warmup_epochs:
+            return 1.0
+        return float(self.current_epoch - start_epoch + 1) / float(warmup_epochs)
+
+    def _graph_distance_matrix(self, device):
+        inf = 1e9
+        D = torch.full((6, 6), inf, dtype=torch.float32, device=device)
+        for i in range(6):
+            D[i, i] = 0.0
+        edges = [
+            (0, 1, float(getattr(self, 'joint_graph_w_00_11', 1.0))),
+            (1, 3, float(getattr(self, 'joint_graph_w_11_21', 0.6))),
+            (1, 2, float(getattr(self, 'joint_graph_w_11_12', 1.2))),
+            (3, 4, float(getattr(self, 'joint_graph_w_21_22', 0.8))),
+            (2, 4, float(getattr(self, 'joint_graph_w_12_22', 0.7))),
+            (4, 5, float(getattr(self, 'joint_graph_w_22_32', 1.5))),
+        ]
+        for i, j, w in edges:
+            D[i, j] = min(float(D[i, j]), w)
+            D[j, i] = min(float(D[j, i]), w)
+        for k in range(6):
+            D = torch.minimum(D, D[:, k:k+1] + D[k:k+1, :])
+        return D
+
+    def _v2_joint_from_outputs(self, outputs, eps=1e-8):
+        ge_g = corn_marginal_ge_probs(torch.sigmoid(outputs['grade_logits']))
+        ge_s = corn_marginal_ge_probs(torch.sigmoid(outputs['stage_ind_logits']))
+        pG = self._build_full_grade_probs_from_ge(ge_g)
+        pS = self._build_full_stage_probs_from_ge(ge_s)
+        H = -(pG.clamp_min(eps) * torch.log(pG.clamp_min(eps))).sum(dim=1) / np.log(4.0)
+        alpha = float(getattr(self, 'alpha_gate_min', 0.15)) + (float(getattr(self, 'alpha_gate_max', 0.65)) - float(getattr(self, 'alpha_gate_min', 0.15))) * H
+        alpha = alpha.clamp(min=0.0, max=1.0)
+        q1 = torch.sigmoid(outputs['q1_logit'].view(-1))
+        q2 = torch.sigmoid(outputs['q2_logit'].view(-1))
+        beta = float(getattr(self, 'joint_beta_stage', 0.5))
+        gamma = float(getattr(self, 'joint_gamma_cond', 0.5))
+        log = torch.log
+        pG_c = pG.clamp(eps, 1.0)
+        pS_c = pS.clamp(eps, 1.0)
+        q1c = q1.clamp(eps, 1.0 - eps)
+        q2c = q2.clamp(eps, 1.0 - eps)
+        a = alpha
+        joint_logits = torch.stack([
+            log(pG_c[:, 0]) + a * beta * log(pS_c[:, 0]),
+            log(pG_c[:, 1]) + a * beta * log(pS_c[:, 1]) + a * gamma * log(q1c),
+            log(pG_c[:, 1]) + a * beta * log(pS_c[:, 2]) + a * gamma * log(1.0 - q1c),
+            log(pG_c[:, 2]) + a * beta * log(pS_c[:, 1]) + a * gamma * log(q2c),
+            log(pG_c[:, 2]) + a * beta * log(pS_c[:, 2]) + a * gamma * log(1.0 - q2c),
+            log(pG_c[:, 3]) + a * beta * log(pS_c[:, 2]),
+        ], dim=1)
+        P_joint6 = torch.softmax(joint_logits, dim=1)
+        P_joint6 = P_joint6 / P_joint6.sum(dim=1, keepdim=True).clamp_min(eps)
+        pG_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 2], P_joint6[:, 3] + P_joint6[:, 4], P_joint6[:, 5]], dim=1)
+        pS_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 3], P_joint6[:, 2] + P_joint6[:, 4] + P_joint6[:, 5]], dim=1)
+        return {
+            'grade_ge': ge_g,
+            'stage_ge': ge_s,
+            'pG_raw4': pG,
+            'pS_ind3': pS,
+            'q1': q1,
+            'q2': q2,
+            'alpha': alpha,
+            'joint_logits': joint_logits,
+            'P_joint6': P_joint6,
+            'pG_fused4': pG_fused,
+            'pS_fused3': pS_fused,
+        }
+
     def set_epoch(self, epoch):
         self.current_epoch = epoch
 
@@ -373,6 +448,65 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 "stage_smooth_enabled": float(1.0 if enable_stage_smooth else 0.0),
                 "loss_stage": float(loss_s.detach().cpu()),
                 "loss_total": float(loss.detach().cpu()),
+            }
+            return loss
+
+        if isinstance(outputs, dict) and all(k in outputs for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"]):
+            y_grade = targets["y_grade"]
+            y_stage = targets["y_stage"]
+            raw_grade = targets.get("raw_grade")
+            raw_stage = targets.get("raw_stage")
+            if raw_grade is None:
+                raw_grade = torch.sum(y_grade > 0.5, dim=1).long()
+            if raw_stage is None:
+                raw_stage = torch.sum(y_stage > 0.5, dim=1).long()
+            fused = self._v2_joint_from_outputs(outputs)
+            loss_grade_base = self._corn_task_loss(outputs['grade_logits'], y_grade, pos_weight=self.loss_grade.pos_weight)
+            loss_grade_soft = loss_grade_base.new_tensor(0.0)
+            if str(getattr(self, 'v1_soft_label_mode', 'none') or 'none').lower() == 'full':
+                y_grade_soft = self._build_v1_grade_soft_targets(raw_grade, getattr(self, 'grade_soft_scheme', 'asym_v1'))
+                loss_grade_soft = self._compute_soft_ce(fused['pG_raw4'], y_grade_soft)
+            loss_grade = loss_grade_base + float(getattr(self, 'loss_w_grade_soft', 0.2) or 0.0) * loss_grade_soft
+            loss_stage_marg_ind = self._corn_task_loss(outputs['stage_ind_logits'], y_stage, pos_weight=self.loss_stage.pos_weight)
+            loss_stage_marg_fused = F.nll_loss(torch.log(fused['pS_fused3'].clamp_min(1e-8)), raw_stage.long())
+
+            zero = loss_grade_base.new_tensor(0.0)
+            mask_g1 = raw_grade == 1
+            mask_g2 = raw_grade == 2
+            if mask_g1.any():
+                z1 = (raw_stage[mask_g1] == 1).float()
+                pos_w1 = torch.tensor(float(getattr(self, 'cond_pos_weight_g1', 3.0)), device=z1.device)
+                loss_cond_11_12 = F.binary_cross_entropy_with_logits(outputs['q1_logit'][mask_g1].view(-1), z1, pos_weight=pos_w1)
+            else:
+                loss_cond_11_12 = zero
+            if mask_g2.any():
+                z2 = (raw_stage[mask_g2] == 1).float()
+                pos_w2 = torch.tensor(float(getattr(self, 'cond_pos_weight_g2', 5.0)), device=z2.device)
+                loss_cond_21_22 = F.binary_cross_entropy_with_logits(outputs['q2_logit'][mask_g2].view(-1), z2, pos_weight=pos_w2)
+            else:
+                loss_cond_21_22 = zero
+
+            D = self._graph_distance_matrix(fused['P_joint6'].device)
+            tau = float(getattr(self, 'joint_graph_tau', 0.7))
+            soft_targets = torch.softmax(-D[targets['joint_id'].long()] / max(tau, 1e-6), dim=1)
+            loss_soft_joint = (-(soft_targets * torch.log(fused['P_joint6'].clamp_min(1e-8))).sum(dim=1)).mean()
+            expected_cost = (fused['P_joint6'] * D[targets['joint_id'].long()]).sum(dim=1).mean()
+            lambda_soft_joint_eff = float(getattr(self, 'lambda_soft_joint', 0.15) or 0.0) * self._v2_soft_joint_factor()
+            loss = loss_grade + float(getattr(self, 'lambda_stage_marg', 0.8)) * (loss_stage_marg_ind + float(getattr(self, 'stage_fused_aux_weight', 0.3)) * loss_stage_marg_fused) + float(getattr(self, 'lambda_cond_stage', 0.6)) * (loss_cond_11_12 + loss_cond_21_22) + lambda_soft_joint_eff * loss_soft_joint
+            self.last_components = {
+                'loss_grade_main': float(loss_grade_base.detach().cpu()),
+                'loss_grade_soft': float(loss_grade_soft.detach().cpu()),
+                'loss_stage_marg_ind': float(loss_stage_marg_ind.detach().cpu()),
+                'loss_stage_marg_fused': float(loss_stage_marg_fused.detach().cpu()),
+                'loss_cond_11_12': float(loss_cond_11_12.detach().cpu()),
+                'loss_cond_21_22': float(loss_cond_21_22.detach().cpu()),
+                'loss_soft_joint': float(loss_soft_joint.detach().cpu()),
+                'mean_alpha_gate': float(fused['alpha'].mean().detach().cpu()),
+                'mean_q1': float(fused['q1'].mean().detach().cpu()),
+                'mean_q2': float(fused['q2'].mean().detach().cpu()),
+                'mean_expected_joint_graph_cost': float(expected_cost.detach().cpu()),
+                'lambda_soft_joint_eff': float(lambda_soft_joint_eff),
+                'loss_total': float(loss.detach().cpu()),
             }
             return loss
 
@@ -648,7 +782,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -742,6 +876,25 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.v1_soft_label_mode = str(getattr(args, "v1_soft_label_mode", "none") or "none").lower()
         criterion.grade_soft_scheme = str(getattr(args, "grade_soft_scheme", "asym_v1") or "asym_v1").lower()
         criterion.stage_soft_scheme = str(getattr(args, "stage_soft_scheme", "asym_v1") or "asym_v1").lower()
+        criterion.lambda_stage_marg = float(getattr(args, "lambda_stage_marg", 0.8) or 0.0)
+        criterion.lambda_cond_stage = float(getattr(args, "lambda_cond_stage", 0.6) or 0.0)
+        criterion.lambda_soft_joint = float(getattr(args, "lambda_soft_joint", 0.15) or 0.0)
+        criterion.stage_fused_aux_weight = float(getattr(args, "stage_fused_aux_weight", 0.3) or 0.0)
+        criterion.cond_pos_weight_g1 = float(getattr(args, "cond_pos_weight_g1", 3.0) or 1.0)
+        criterion.cond_pos_weight_g2 = float(getattr(args, "cond_pos_weight_g2", 5.0) or 1.0)
+        criterion.joint_graph_tau = float(getattr(args, "joint_graph_tau", 0.7) or 0.7)
+        criterion.joint_beta_stage = float(getattr(args, "joint_beta_stage", 0.5) or 0.5)
+        criterion.joint_gamma_cond = float(getattr(args, "joint_gamma_cond", 0.5) or 0.5)
+        criterion.v2_soft_joint_start_epoch = int(getattr(args, "v2_soft_joint_start_epoch", 5) or 5)
+        criterion.v2_soft_joint_warmup_epochs = int(getattr(args, "v2_soft_joint_warmup_epochs", 5) or 5)
+        criterion.alpha_gate_min = float(getattr(args, "alpha_gate_min", 0.15) or 0.15)
+        criterion.alpha_gate_max = float(getattr(args, "alpha_gate_max", 0.65) or 0.65)
+        criterion.joint_graph_w_00_11 = float(getattr(args, "joint_graph_w_00_11", 1.0) or 1.0)
+        criterion.joint_graph_w_11_21 = float(getattr(args, "joint_graph_w_11_21", 0.6) or 0.6)
+        criterion.joint_graph_w_11_12 = float(getattr(args, "joint_graph_w_11_12", 1.2) or 1.2)
+        criterion.joint_graph_w_21_22 = float(getattr(args, "joint_graph_w_21_22", 0.8) or 0.8)
+        criterion.joint_graph_w_12_22 = float(getattr(args, "joint_graph_w_12_22", 0.7) or 0.7)
+        criterion.joint_graph_w_22_32 = float(getattr(args, "joint_graph_w_22_32", 1.5) or 1.5)
         if getattr(args, "pos_weight_anyhtn", None):
           try:
             criterion.pos_weight_anyhtn = torch.tensor(float(args.pos_weight_anyhtn), dtype=torch.float32, device=device)
@@ -794,6 +947,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         pos_weight = torch.tensor(neg / (pos + eps), dtype=torch.float32, device=device)
         criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight) #pos_weight_BCE阳性越少，权重越大，缓解CAD很多，其他几乎没有的倾斜
       model = build_classification_model(args)
+      if hasattr(model, "use_stopgrad_grade_for_cond"):
+        model.use_stopgrad_grade_for_cond = bool(getattr(args, "use_stopgrad_grade_for_cond", True))
       print(model)
       
       # Old freeze_encoder
@@ -811,7 +966,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           if args.data_set in multihead_datasets:
             p.requires_grad = (
               name.startswith('head_grade') or name.startswith('head_stage') or
-              name.startswith('head_anyhtn') or name.startswith('head_grade_pos') or name.startswith('head_stage_pos')
+              name.startswith('head_anyhtn') or name.startswith('head_grade_pos') or name.startswith('head_stage_pos') or name.startswith('head_') or name.startswith('cond_') or name.startswith('joint_')
             )
           else:
             p.requires_grad = (name in ['head.weight', 'head.bias'])
@@ -1219,8 +1374,15 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               aux_scores["grade_pos_probs"] = p_test["grade_pos_probs"].cpu().numpy()
             if "stage_pos_probs" in p_test:
               aux_scores["stage_pos_probs"] = p_test["stage_pos_probs"].cpu().numpy()
+            if "q1" in p_test:
+              aux_scores["q1"] = p_test["q1"].cpu().numpy()
+              aux_scores["q2"] = p_test["q2"].cpu().numpy()
+              aux_scores["p_joint6"] = p_test["p_joint6"].cpu().numpy()
+              aux_scores["pG_fused"] = p_test["pG_fused"].cpu().numpy()
+              aux_scores["pS_fused"] = p_test["pS_fused"].cpu().numpy()
+              aux_scores["alpha_gate"] = p_test["alpha_gate"].cpu().numpy()
 
-          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1"}:
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1255,7 +1417,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 val_p_stage = p_val_pred["stage"].cpu().numpy()
               else:
                 raise ValueError("Expected multi-head dict outputs on validation decoder pass, but got non-dict outputs.")
-            metrics, pred_rows, report_lines = evaluate_grade_stage_sep(
+            eval_fn = evaluate_grade_stage_v2 if args.data_set == "advCheX_hyp_grade_stage_v2" else evaluate_grade_stage_sep
+            metrics, pred_rows, report_lines = eval_fn(
               y_grade, y_stage, p_grade, p_stage, output_dir=output_dir, path_list=path_list,
               modethese=getattr(args, "modethese", False),
               decodermode=getattr(args, "decodermode", "non"),
