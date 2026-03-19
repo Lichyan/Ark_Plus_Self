@@ -81,3 +81,7 @@ Changes: MultiHeadOrdinalLoss 记录 mean(P_joint_true)/mean(-logP_joint_true)�
 [2026-03-17] -codex
 Reason: 在不新增数据集模式名的前提下，直接对 advCheX_hyp_multi_grade_stage_v1 迁移 sep_v1 的 richer outputs/decoder 能力，并补充 full-grade/full-stage 分布型 soft-label 损失。
 Changes: v1 测试路径复用 sep_v1 decoder（non/threshold/ev/temp_threshold/temp_ev）并在 decoder_mode!=non 时真正接管最终分类；支持 decoder_use_saved_thresholds=False + val_data_dir 构建验证集重搜参数；v1 测试统一输出 predictions.csv/metrics.json/result.txt 与 ROC/混淆矩阵/校准/invalid 统计图（含 joint 7x7 Invalid 类）；metrics/result 新增 decoder 配置、raw-vs-final、invalid raw/final、soft-label 配置与 joint/incomp 配置摘要；在 MultiHeadOrdinalLoss 中新增 v1_soft_label_mode=none|full（默认 none），按 asym_v1 固定方案对 full pG(4类)/pS(3类)添加 soft CE 辅助项并按 w_grade/w_stage 组合且不改 joint/incomp 数学定义；新增 v1_soft_label_mode/grade_soft_scheme/stage_soft_scheme/loss_w_stage_soft 等参数并保持旧命令兼容。
+
+[2026-03-19] -codex
+Reason: 修复 advCheX_hyp_grade_stage_v2 在训练期验证输出收集阶段仍按旧 tuple 解包导致的崩溃，并落实 v2 单独损失打印模板。
+Changes: 在 engine._collect_outputs_multi 中新增 advCheX_hyp_grade_stage_v2 的 dict 输出分支，按 raw grade/stage CORN 概率继续收集与保存 thresholds（保持方案3A）；训练/验证 epoch 汇总新增 [MultiHead][Loss][v2] 专属打印模板，显式展示 loss_grade_main/loss_grade_soft/loss_stage_marg_ind/loss_stage_marg_fused/loss_cond_11_12/loss_cond_21_22/loss_soft_joint 以及 mean_alpha_gate/mean_q1/mean_q2/mean_expected_joint_graph_cost；不扩展 helper 返回签名，保持对 v1/sep_v1 的兼容性。

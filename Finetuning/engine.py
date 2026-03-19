@@ -718,7 +718,16 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
                 b = torch.sigmoid(out["stage_pos"]).view(-1, 1)
                 p_grade = torch.cat([pH, pH * a[:, :1], pH * a[:, 1:2]], dim=1)
                 p_stage = torch.cat([pH, pH * b], dim=1)
-            else:
+            elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"]):
+                logits_grade = out["grade_logits"]
+                logits_stage = out["stage_ind_logits"]
+                if str(ordinal_mode).lower() == "corn":
+                    p_grade = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+                    p_stage = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+                else:
+                    p_grade = torch.sigmoid(logits_grade)
+                    p_stage = torch.sigmoid(logits_stage)
+            elif isinstance(out, tuple) and len(out) == 2:
                 logits_grade, logits_stage = out
                 if str(ordinal_mode).lower() == "corn":
                     q_grade = torch.sigmoid(logits_grade)
@@ -728,6 +737,8 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
                 else:
                     p_grade = torch.sigmoid(logits_grade)
                     p_stage = torch.sigmoid(logits_stage)
+            else:
+                raise TypeError(f"_collect_outputs_multi 不支持的模型输出类型: {type(out)}")
             p_grade_all = torch.cat((p_grade_all, p_grade), 0)
             p_stage_all = torch.cat((p_stage_all, p_stage), 0)
     return (
@@ -1030,7 +1041,40 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         val_loss = val_out[0] if isinstance(val_out, tuple) else val_out
         val_components = val_out[1] if isinstance(val_out, tuple) else None
         if args.data_set in multihead_datasets and train_components is not None and val_components is not None:
-          if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
+          if args.data_set == "advCheX_hyp_multi_grade_stage_v2":
+            print(
+              "[MultiHead][Loss][v2] train: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} S_fused={:.4f} "
+              "C_11v12={:.4f} C_21v22={:.4f} J_soft={:.4f} alpha={:.4f} q1={:.4f} q2={:.4f} graph_cost={:.4f} total={:.4f} | "
+              "val: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} S_fused={:.4f} C_11v12={:.4f} C_21v22={:.4f} "
+              "J_soft={:.4f} alpha={:.4f} q1={:.4f} q2={:.4f} graph_cost={:.4f} total={:.4f}".format(
+                train_components.get("loss_grade_main", 0.0),
+                train_components.get("loss_grade_soft", 0.0),
+                train_components.get("loss_stage_marg_ind", 0.0),
+                train_components.get("loss_stage_marg_fused", 0.0),
+                train_components.get("loss_cond_11_12", 0.0),
+                train_components.get("loss_cond_21_22", 0.0),
+                train_components.get("loss_soft_joint", 0.0),
+                train_components.get("mean_alpha_gate", 0.0),
+                train_components.get("mean_q1", 0.0),
+                train_components.get("mean_q2", 0.0),
+                train_components.get("mean_expected_joint_graph_cost", 0.0),
+                train_components.get("loss_total", train_loss),
+                val_components.get("loss_grade_main", 0.0),
+                val_components.get("loss_grade_soft", 0.0),
+                val_components.get("loss_stage_marg_ind", 0.0),
+                val_components.get("loss_stage_marg_fused", 0.0),
+                val_components.get("loss_cond_11_12", 0.0),
+                val_components.get("loss_cond_21_22", 0.0),
+                val_components.get("loss_soft_joint", 0.0),
+                val_components.get("mean_alpha_gate", 0.0),
+                val_components.get("mean_q1", 0.0),
+                val_components.get("mean_q2", 0.0),
+                val_components.get("mean_expected_joint_graph_cost", 0.0),
+                val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
+          elif args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
             print(
               "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} "
               "G_corn={:.4f} G_soft={:.4f} G_total={:.4f} S={:.4f} S_smooth={:.0f} total={:.4f} | "
