@@ -1135,6 +1135,14 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
         return len(self.img_list)
 
 
+class advCheX_hyp_grade_stage_v2(advCheX_hyp_multi_grade_stage_v1):
+    """v2 数据集薄包装：复用 v1 的 CSV 读取与监督结构。"""
+
+    def __init__(self, images_path, file_path, augment, few_shot=-1, inconsistent_policy="drop"):
+        super().__init__(images_path=images_path, file_path=file_path, augment=augment, few_shot=few_shot,
+                         inconsistent_policy=inconsistent_policy)
+
+
 class advCheX_hyp_multi_grade_stage_sep_v1(Dataset):
     """高血压分级+分层分离训练：共享encoder，仅 grade/stage 两个ordinal头。"""
 

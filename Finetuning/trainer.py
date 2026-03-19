@@ -1,4 +1,4 @@
-from utils import MetricLogger, ProgressLogger, corn_marginal_ge_probs
+from utils import MetricLogger, ProgressLogger, corn_marginal_ge_probs, compose_v2_joint_predictions
 from models import build_classification_model
 import time
 import torch
@@ -107,6 +107,8 @@ def evaluate(data_loader_val, device, model, criterion):
 def test_classification(checkpoint, data_loader_test, device, args):
   print('[DEBUG] ...heyheyhey:test_clasification', flush=True)
   model = build_classification_model(args)
+  if hasattr(model, 'use_stopgrad_grade_for_cond'):
+    model.use_stopgrad_grade_for_cond = bool(getattr(args, 'use_stopgrad_grade_for_cond', True))
 
   try:
     modelCheckpoint = torch.load(checkpoint, weights_only=True)
@@ -140,6 +142,12 @@ def test_classification(checkpoint, data_loader_test, device, args):
   p_anyhtn_test = torch.FloatTensor().cuda()
   p_grade_pos_test = torch.FloatTensor().cuda()
   p_stage_pos_test = torch.FloatTensor().cuda()
+  q1_test = torch.FloatTensor().cuda()
+  q2_test = torch.FloatTensor().cuda()
+  p_joint6_test = torch.FloatTensor().cuda()
+  pG_fused_test = torch.FloatTensor().cuda()
+  pS_fused_test = torch.FloatTensor().cuda()
+  alpha_gate_test = torch.FloatTensor().cuda()
   path_list = []
   printed = False
 
@@ -182,9 +190,12 @@ def test_classification(checkpoint, data_loader_test, device, args):
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         print('[DEBUG] first batch input  mean/std:',
               samples.mean().item(), samples.std().item(), flush=True)
-        if isinstance(out, dict):
+        if isinstance(out, dict) and "anyhtn" in out:
           print('[DEBUG] first batch output mean/std:',
                 out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
+        elif isinstance(out, dict) and "grade_logits" in out:
+          print('[DEBUG] first batch output mean/std:',
+                out["grade_logits"].mean().item(), out["grade_logits"].std().item(), flush=True)
         elif isinstance(out, tuple):
           print('[DEBUG] first batch output mean/std:',
                 out[0].mean().item(), out[0].std().item(), flush=True)
@@ -193,6 +204,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
                 out.mean().item(), out.std().item(), flush=True)
         printed = True
       if isinstance(out, dict) and all(k in out for k in ["anyhtn", "grade_pos", "stage_pos"]):
+
         pH = torch.sigmoid(out["anyhtn"])
         a = corn_marginal_ge_probs(torch.sigmoid(out["grade_pos"]))
         b = torch.sigmoid(out["stage_pos"])
@@ -207,6 +219,26 @@ def test_classification(checkpoint, data_loader_test, device, args):
         p_grade_pos_test = torch.cat((p_grade_pos_test, gpos.view(bs, n_crops, -1).mean(1).data), 0)
         spos = torch.cat([1 - b, b], dim=1)
         p_stage_pos_test = torch.cat((p_stage_pos_test, spos.view(bs, n_crops, -1).mean(1).data), 0)
+      elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"]):
+        raw_grade_ge = corn_marginal_ge_probs(torch.sigmoid(out["grade_logits"]))
+        raw_stage_ge = corn_marginal_ge_probs(torch.sigmoid(out["stage_ind_logits"]))
+        joint = compose_v2_joint_predictions(
+          raw_grade_ge, raw_stage_ge, out["q1_logit"], out["q2_logit"],
+          alpha_gate_min=getattr(args, "alpha_gate_min", 0.15),
+          alpha_gate_max=getattr(args, "alpha_gate_max", 0.65),
+          joint_beta_stage=getattr(args, "joint_beta_stage", 0.5),
+          joint_gamma_cond=getattr(args, "joint_gamma_cond", 0.5),
+        )
+        out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
+        out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+        q1_test = torch.cat((q1_test, joint["q1"].view(bs, n_crops, -1).mean(1).data), 0)
+        q2_test = torch.cat((q2_test, joint["q2"].view(bs, n_crops, -1).mean(1).data), 0)
+        p_joint6_test = torch.cat((p_joint6_test, joint["P_joint6"].view(bs, n_crops, -1).mean(1).data), 0)
+        pG_fused_test = torch.cat((pG_fused_test, joint["pG_fused4"].view(bs, n_crops, -1).mean(1).data), 0)
+        pS_fused_test = torch.cat((pS_fused_test, joint["pS_fused3"].view(bs, n_crops, -1).mean(1).data), 0)
+        alpha_gate_test = torch.cat((alpha_gate_test, joint["alpha"].view(bs, n_crops, -1).mean(1).data), 0)
       elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
@@ -236,6 +268,15 @@ def test_classification(checkpoint, data_loader_test, device, args):
       p_dict["anyhtn"] = p_anyhtn_test
       p_dict["grade_pos_probs"] = p_grade_pos_test
       p_dict["stage_pos_probs"] = p_stage_pos_test
+    if p_joint6_test.numel() > 0:
+      p_dict.update({
+        "q1": q1_test,
+        "q2": q2_test,
+        "p_joint6": p_joint6_test,
+        "pG_fused": pG_fused_test,
+        "pS_fused": pS_fused_test,
+        "alpha_gate": alpha_gate_test,
+      })
     if path_list:
       return y_dict, p_dict, path_list
     return y_dict, p_dict

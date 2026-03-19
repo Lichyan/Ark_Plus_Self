@@ -1693,3 +1693,199 @@ def load_swin_pretrained(ckpt, model):
 
     del ckpt
     torch.cuda.empty_cache()
+
+
+def corn_probs_to_class_probs_torch(p_ge):
+    if p_ge.shape[1] == 3:
+        p0 = 1.0 - p_ge[:, 0]
+        p1 = np_or_torch_clamp(p_ge[:, 0] - p_ge[:, 1])
+        p2 = np_or_torch_clamp(p_ge[:, 1] - p_ge[:, 2])
+        p3 = np_or_torch_clamp(p_ge[:, 2])
+        p = stack_like(p_ge, [p0, p1, p2, p3])
+    else:
+        s0 = 1.0 - p_ge[:, 0]
+        s1 = np_or_torch_clamp(p_ge[:, 0] - p_ge[:, 1])
+        s2 = np_or_torch_clamp(p_ge[:, 1])
+        p = stack_like(p_ge, [s0, s1, s2])
+    return p / sum_like(p, axis=1, keepdims=True).clip(min=1e-8)
+
+
+def np_or_torch_clamp(x, minv=0.0, maxv=1.0):
+    if hasattr(x, 'clamp'):
+        return x.clamp(minv, maxv)
+    return np.clip(x, minv, maxv)
+
+
+def stack_like(ref, arrs):
+    if isinstance(ref, torch.Tensor):
+        return torch.stack(arrs, dim=1)
+    return np.stack(arrs, axis=1)
+
+
+def sum_like(x, axis=1, keepdims=True):
+    if isinstance(x, torch.Tensor):
+        return x.sum(dim=axis, keepdim=keepdims)
+    return x.sum(axis=axis, keepdims=keepdims)
+
+
+def build_v2_joint_graph_distance_matrix_numpy(joint_graph_w_00_11=1.0, joint_graph_w_11_21=0.6,
+                                             joint_graph_w_11_12=1.2, joint_graph_w_21_22=0.8,
+                                             joint_graph_w_12_22=0.7, joint_graph_w_22_32=1.5):
+    inf = 1e9
+    D = np.full((6, 6), inf, dtype=np.float32)
+    np.fill_diagonal(D, 0.0)
+    edges = [
+        (0, 1, joint_graph_w_00_11),
+        (1, 3, joint_graph_w_11_21),
+        (1, 2, joint_graph_w_11_12),
+        (3, 4, joint_graph_w_21_22),
+        (2, 4, joint_graph_w_12_22),
+        (4, 5, joint_graph_w_22_32),
+    ]
+    for i, j, w in edges:
+        D[i, j] = min(D[i, j], float(w))
+        D[j, i] = min(D[j, i], float(w))
+    for k in range(6):
+        D = np.minimum(D, D[:, [k]] + D[[k], :])
+    return D
+
+
+def compose_v2_joint_predictions(p_ge_grade, p_ge_stage, q1_logit, q2_logit, alpha_gate_min=0.15, alpha_gate_max=0.65,
+                                 joint_beta_stage=0.5, joint_gamma_cond=0.5, eps=1e-8):
+    pG = corn_probs_to_class_probs_torch(p_ge_grade)
+    pS = corn_probs_to_class_probs_torch(p_ge_stage)
+    if isinstance(pG, torch.Tensor):
+        H = -(pG.clamp_min(eps) * torch.log(pG.clamp_min(eps))).sum(dim=1) / np.log(4.0)
+        alpha = alpha_gate_min + (alpha_gate_max - alpha_gate_min) * H
+        q1 = torch.sigmoid(q1_logit.view(-1))
+        q2 = torch.sigmoid(q2_logit.view(-1))
+        pg = pG.clamp(eps, 1.0); ps = pS.clamp(eps, 1.0); q1c = q1.clamp(eps, 1.0 - eps); q2c = q2.clamp(eps, 1.0 - eps)
+        joint_logits = torch.stack([
+            torch.log(pg[:, 0]) + alpha * joint_beta_stage * torch.log(ps[:, 0]),
+            torch.log(pg[:, 1]) + alpha * joint_beta_stage * torch.log(ps[:, 1]) + alpha * joint_gamma_cond * torch.log(q1c),
+            torch.log(pg[:, 1]) + alpha * joint_beta_stage * torch.log(ps[:, 2]) + alpha * joint_gamma_cond * torch.log(1.0 - q1c),
+            torch.log(pg[:, 2]) + alpha * joint_beta_stage * torch.log(ps[:, 1]) + alpha * joint_gamma_cond * torch.log(q2c),
+            torch.log(pg[:, 2]) + alpha * joint_beta_stage * torch.log(ps[:, 2]) + alpha * joint_gamma_cond * torch.log(1.0 - q2c),
+            torch.log(pg[:, 3]) + alpha * joint_beta_stage * torch.log(ps[:, 2]),
+        ], dim=1)
+        P_joint6 = torch.softmax(joint_logits, dim=1)
+        pG_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 2], P_joint6[:, 3] + P_joint6[:, 4], P_joint6[:, 5]], dim=1)
+        pS_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 3], P_joint6[:, 2] + P_joint6[:, 4] + P_joint6[:, 5]], dim=1)
+        return {"pG_raw4": pG, "pS_ind3": pS, "q1": q1.unsqueeze(1), "q2": q2.unsqueeze(1), "alpha": alpha.unsqueeze(1), "P_joint6": P_joint6, "pG_fused4": pG_fused, "pS_fused3": pS_fused}
+    raise TypeError('compose_v2_joint_predictions expects torch tensors')
+
+
+def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=None, modethese=False,
+                            decodermode='non', decoder_objective='qwk', decoder_bins=101,
+                            decoder_use_saved_thresholds=True, decoder_save_debug=True,
+                            temperature_init=1.0, temperature_min=0.5, temperature_max=5.0, temperature_grid_size=91,
+                            decoder_keep_raw_metrics=True, thresholds_src=None,
+                            val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None,
+                            dataset_tag='dataset', aux_scores=None, **kwargs):
+    metrics, rows, report_lines = evaluate_grade_stage_sep(
+        y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=path_list, modethese=modethese,
+        decodermode=decodermode, decoder_objective=decoder_objective, decoder_bins=decoder_bins,
+        decoder_use_saved_thresholds=decoder_use_saved_thresholds, decoder_save_debug=decoder_save_debug,
+        temperature_init=temperature_init, temperature_min=temperature_min, temperature_max=temperature_max,
+        temperature_grid_size=temperature_grid_size, decoder_keep_raw_metrics=decoder_keep_raw_metrics,
+        thresholds_src=thresholds_src, val_y_grade=val_y_grade, val_y_stage=val_y_stage,
+        val_p_ge_grade=val_p_ge_grade, val_p_ge_stage=val_p_ge_stage, dataset_tag=dataset_tag,
+        aux_scores=aux_scores, **kwargs)
+    if aux_scores is None or 'p_joint6' not in aux_scores:
+        return metrics, rows, report_lines
+    p_joint6 = np.asarray(aux_scores['p_joint6'])
+    pG_fused = np.asarray(aux_scores['pG_fused'])
+    pS_fused = np.asarray(aux_scores['pS_fused'])
+    q1 = np.asarray(aux_scores['q1']).reshape(-1)
+    q2 = np.asarray(aux_scores['q2']).reshape(-1)
+    alpha = np.asarray(aux_scores['alpha_gate']).reshape(-1)
+    grades_true = np.array([ordinal_targets_to_grade(row) for row in np.asarray(y_grade)])
+    stages_true = np.array([ordinal_targets_to_grade(row) for row in np.asarray(y_stage)])
+    grade_raw = pG_fused * 0.0 + corn_probs_to_class_probs_torch(np.asarray(p_ge_grade))
+    stage_raw = pS_fused * 0.0 + corn_probs_to_class_probs_torch(np.asarray(p_ge_stage))
+    grade_pred_raw = np.argmax(grade_raw, axis=1)
+    stage_pred_raw = np.argmax(stage_raw, axis=1)
+    joint_pred_fused = np.argmax(p_joint6, axis=1)
+    grade_pred_fused = np.array([JOINT_LABELS[idx][0] for idx in joint_pred_fused])
+    stage_pred_fused = np.array([JOINT_LABELS[idx][1] for idx in joint_pred_fused])
+    joint_graph_w_00_11 = float(kwargs['joint_graph_w_00_11'])
+    joint_graph_w_11_21 = float(kwargs['joint_graph_w_11_21'])
+    joint_graph_w_11_12 = float(kwargs['joint_graph_w_11_12'])
+    joint_graph_w_21_22 = float(kwargs['joint_graph_w_21_22'])
+    joint_graph_w_12_22 = float(kwargs['joint_graph_w_12_22'])
+    joint_graph_w_22_32 = float(kwargs['joint_graph_w_22_32'])
+    D = build_v2_joint_graph_distance_matrix_numpy(
+        joint_graph_w_00_11=joint_graph_w_00_11,
+        joint_graph_w_11_21=joint_graph_w_11_21,
+        joint_graph_w_11_12=joint_graph_w_11_12,
+        joint_graph_w_21_22=joint_graph_w_21_22,
+        joint_graph_w_12_22=joint_graph_w_12_22,
+        joint_graph_w_22_32=joint_graph_w_22_32,
+    )
+    joint_gt = np.array([JOINT_LABEL_TO_INDEX[(int(g), int(s))] for g, s in zip(grades_true, stages_true)])
+    fused_pairs = [(int(g), int(s)) for g, s in zip(grade_pred_fused, stage_pred_fused)]
+    fused_invalid = np.array([pair not in JOINT_LABEL_TO_INDEX for pair in fused_pairs], dtype=np.float32)
+    expected_graph_cost = float(np.mean(np.sum(p_joint6 * D[joint_gt], axis=1)))
+    metrics.update({
+        'Confmat_grade_raw': confusion_matrix(grades_true, grade_pred_raw, labels=[0,1,2,3]).tolist(),
+        'Confmat_grade_fused': confusion_matrix(grades_true, grade_pred_fused, labels=[0,1,2,3]).tolist(),
+        'Confmat_stage_raw': confusion_matrix(stages_true, stage_pred_raw, labels=[0,1,2]).tolist(),
+        'Confmat_stage_fused': confusion_matrix(stages_true, stage_pred_fused, labels=[0,1,2]).tolist(),
+        'Confmat_joint_fused_6class': confusion_matrix(joint_gt, joint_pred_fused, labels=list(range(6))).tolist(),
+        'fused_invalid_rate': float(fused_invalid.mean()) if fused_invalid.size > 0 else np.nan,
+        'mean_alpha_gate': float(alpha.mean()),
+        'mean_q1': float(q1.mean()),
+        'mean_q2': float(q2.mean()),
+        'mean_expected_joint_graph_cost': expected_graph_cost,
+        'joint_graph_tau': float(kwargs['joint_graph_tau']),
+        'joint_beta_stage': float(kwargs['joint_beta_stage']),
+        'joint_gamma_cond': float(kwargs['joint_gamma_cond']),
+        'lambda_stage_marg': float(kwargs['lambda_stage_marg']),
+        'lambda_cond_stage': float(kwargs['lambda_cond_stage']),
+        'lambda_soft_joint': float(kwargs['lambda_soft_joint']),
+        'stage_fused_aux_weight': float(kwargs['stage_fused_aux_weight']),
+        'cond_pos_weight_g1': float(kwargs['cond_pos_weight_g1']),
+        'cond_pos_weight_g2': float(kwargs['cond_pos_weight_g2']),
+        'alpha_gate_min': float(kwargs['alpha_gate_min']),
+        'alpha_gate_max': float(kwargs['alpha_gate_max']),
+        'v2_soft_joint_start_epoch': int(kwargs['v2_soft_joint_start_epoch']),
+        'v2_soft_joint_warmup_epochs': int(kwargs['v2_soft_joint_warmup_epochs']),
+        'use_stopgrad_grade_for_cond': bool(kwargs['use_stopgrad_grade_for_cond']),
+        'teacher_force_grade_epochs': f"{int(kwargs['teacher_force_grade_epochs'])} / not_used_in_v2_patch1",
+        'v2_disable_legacy_joint': True,
+        'joint_graph_w_00_11': joint_graph_w_00_11,
+        'joint_graph_w_11_21': joint_graph_w_11_21,
+        'joint_graph_w_11_12': joint_graph_w_11_12,
+        'joint_graph_w_21_22': joint_graph_w_21_22,
+        'joint_graph_w_12_22': joint_graph_w_12_22,
+        'joint_graph_w_22_32': joint_graph_w_22_32,
+        'graph_edge_weights_summary': {
+            '00_11': joint_graph_w_00_11, '11_21': joint_graph_w_11_21,
+            '11_12': joint_graph_w_11_12, '21_22': joint_graph_w_21_22,
+            '12_22': joint_graph_w_12_22, '22_32': joint_graph_w_22_32,
+        },
+        'joint_graph_distance_matrix': D.tolist(),
+    })
+    mask_g1 = grades_true == 1
+    mask_g2 = grades_true == 2
+    metrics['AUC_cond_11_vs12'] = safe_roc_auc((stages_true[mask_g1] == 1).astype(int), q1[mask_g1]) if mask_g1.sum() > 1 else np.nan
+    metrics['AUC_cond_21_vs22'] = safe_roc_auc((stages_true[mask_g2] == 1).astype(int), q2[mask_g2]) if mask_g2.sum() > 1 else np.nan
+    _plot_confusion_matrix(confusion_matrix(grades_true, grade_pred_fused, labels=[0,1,2,3]), ["0","1","2","3"], 'Grade Fused Confmat', os.path.join(output_dir, 'Confmat_grade_fused.png'))
+    _plot_confusion_matrix(confusion_matrix(stages_true, stage_pred_fused, labels=[0,1,2]), ["0","1","2"], 'Stage Fused Confmat', os.path.join(output_dir, 'Confmat_stage_fused.png'))
+    _plot_confusion_matrix(confusion_matrix(joint_gt, joint_pred_fused, labels=list(range(6))), ["00","11","12","21","22","32"], 'Joint Fused Confmat', os.path.join(output_dir, 'Confmat_grade_stage_fused.png'))
+    for i, row in enumerate(rows):
+        row.update({
+            'grade_pred_raw_v2': int(grade_pred_raw[i]), 'stage_pred_raw_v2': int(stage_pred_raw[i]),
+            'joint_pred_fused': int(joint_pred_fused[i]), 'grade_pred_fused': int(grade_pred_fused[i]), 'stage_pred_fused': int(stage_pred_fused[i]),
+            'q1': float(q1[i]), 'q2': float(q2[i]), 'alpha_gate': float(alpha[i]),
+            'p_joint_00': float(p_joint6[i,0]), 'p_joint_11': float(p_joint6[i,1]), 'p_joint_12': float(p_joint6[i,2]),
+            'p_joint_21': float(p_joint6[i,3]), 'p_joint_22': float(p_joint6[i,4]), 'p_joint_32': float(p_joint6[i,5]),
+        })
+    report_lines.extend(['', '[v2 Fused Summary]', json.dumps({
+        'fused_invalid_rate': metrics['fused_invalid_rate'], 'mean_alpha_gate': metrics['mean_alpha_gate'],
+        'mean_q1': metrics['mean_q1'], 'mean_q2': metrics['mean_q2'], 'AUC_cond_11_vs12': metrics['AUC_cond_11_vs12'],
+        'AUC_cond_21_vs22': metrics['AUC_cond_21_vs22'], 'v2_disable_legacy_joint': True,
+        'teacher_force_grade_epochs': metrics['teacher_force_grade_epochs'],
+        'graph_edge_weights_summary': metrics['graph_edge_weights_summary'],
+    }, ensure_ascii=False)])
+    return metrics, rows, report_lines
