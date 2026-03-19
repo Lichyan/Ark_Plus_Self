@@ -30,7 +30,7 @@ def get_args_parser():
                       default=14, type="int")
     parser.add_option("--num_class_grade", dest="num_class_grade", help="number of grade ordinal logits", default=3, type="int")
     parser.add_option("--num_class_stage", dest="num_class_stage", help="number of stage ordinal logits", default=2, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1|advCheX_hyp_grade_stage_v2", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -202,6 +202,28 @@ def get_args_parser():
     parser.add_option("--v1_soft_label_mode", dest="v1_soft_label_mode", help="none|full (apply full-grade/full-stage soft distribution loss for v1)", default="none", type="string")
     parser.add_option("--grade_soft_scheme", dest="grade_soft_scheme", help="soft target scheme for v1 grade full distribution", default="asym_v1", type="string")
     parser.add_option("--stage_soft_scheme", dest="stage_soft_scheme", help="soft target scheme for v1 stage full distribution", default="asym_v1", type="string")
+    parser.add_option("--lambda_stage_marg", dest="lambda_stage_marg", default=0.8, type="float")
+    parser.add_option("--lambda_cond_stage", dest="lambda_cond_stage", default=0.6, type="float")
+    parser.add_option("--lambda_soft_joint", dest="lambda_soft_joint", default=0.15, type="float")
+    parser.add_option("--stage_fused_aux_weight", dest="stage_fused_aux_weight", default=0.3, type="float")
+    parser.add_option("--cond_pos_weight_g1", dest="cond_pos_weight_g1", default=3.0, type="float")
+    parser.add_option("--cond_pos_weight_g2", dest="cond_pos_weight_g2", default=5.0, type="float")
+    parser.add_option("--joint_graph_tau", dest="joint_graph_tau", default=0.7, type="float")
+    parser.add_option("--joint_beta_stage", dest="joint_beta_stage", default=0.5, type="float")
+    parser.add_option("--joint_gamma_cond", dest="joint_gamma_cond", default=0.5, type="float")
+    parser.add_option("--v2_soft_joint_start_epoch", dest="v2_soft_joint_start_epoch", default=5, type="int")
+    parser.add_option("--v2_soft_joint_warmup_epochs", dest="v2_soft_joint_warmup_epochs", default=5, type="int")
+    parser.add_option("--use_stopgrad_grade_for_cond", dest="use_stopgrad_grade_for_cond", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--teacher_force_grade_epochs", dest="teacher_force_grade_epochs", default=0, type="int")
+    parser.add_option("--alpha_gate_min", dest="alpha_gate_min", default=0.15, type="float")
+    parser.add_option("--alpha_gate_max", dest="alpha_gate_max", default=0.65, type="float")
+    parser.add_option("--joint_graph_w_00_11", dest="joint_graph_w_00_11", default=1.0, type="float")
+    parser.add_option("--joint_graph_w_11_21", dest="joint_graph_w_11_21", default=0.6, type="float")
+    parser.add_option("--joint_graph_w_11_12", dest="joint_graph_w_11_12", default=1.2, type="float")
+    parser.add_option("--joint_graph_w_21_22", dest="joint_graph_w_21_22", default=0.8, type="float")
+    parser.add_option("--joint_graph_w_12_22", dest="joint_graph_w_12_22", default=0.7, type="float")
+    parser.add_option("--joint_graph_w_22_32", dest="joint_graph_w_22_32", default=1.5, type="float")
     parser.add_option("--test_time_adjust", dest="test_time_adjust", help="在测试集上重新寻阈值", default=False,
                       action="callback", callback=vararg_callback_bool)
     parser.add_option("--output_special", dest="output_special", help="输出TP/FP/TN/FN样本示例", default=False,
@@ -662,6 +684,22 @@ def main(args):
         diseases = label_names
         classification_engine(args, model_path, output_path, diseases,
                              dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_grade_stage_v2":
+        diseases = ['grade', 'stage']
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.train_list,
+                augment=build_transform_classification(normalize=args.normalization, mode="train", crop_size=args.input_size, resize=args.img_size),
+                few_shot=args.few_shot)
+            dataset_val = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.val_list,
+                augment=build_transform_classification(normalize=args.normalization, mode="valid", crop_size=args.input_size, resize=args.img_size))
+        else:
+            dataset_train = None
+            dataset_val = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.val_list,
+                augment=build_transform_classification(normalize=args.normalization, mode="valid", crop_size=args.input_size, resize=args.img_size)) if args.val_list else None
+        dataset_test = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.test_list,
+            augment=build_transform_classification(normalize=args.normalization, mode="test", crop_size=args.input_size, resize=args.img_size))
+        classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test)
 
     elif args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1":
         args.num_class_grade = 3
