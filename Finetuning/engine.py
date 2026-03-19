@@ -1492,7 +1492,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
               loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
-              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else "v1"),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else "v1")),
               v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
               grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
               stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
@@ -1501,6 +1501,27 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               joint_gate=getattr(args, "joint_gate", "htn_only"),
               joint_detach=getattr(args, "joint_detach", "both"),
               incomp_mode=getattr(args, "incomp_mode", "mask_sum"),
+              lambda_stage_marg=getattr(args, "lambda_stage_marg", 0.8),
+              lambda_cond_stage=getattr(args, "lambda_cond_stage", 0.6),
+              lambda_soft_joint=getattr(args, "lambda_soft_joint", 0.15),
+              stage_fused_aux_weight=getattr(args, "stage_fused_aux_weight", 0.3),
+              cond_pos_weight_g1=getattr(args, "cond_pos_weight_g1", 3.0),
+              cond_pos_weight_g2=getattr(args, "cond_pos_weight_g2", 5.0),
+              joint_graph_tau=getattr(args, "joint_graph_tau", 0.7),
+              joint_beta_stage=getattr(args, "joint_beta_stage", 0.5),
+              joint_gamma_cond=getattr(args, "joint_gamma_cond", 0.5),
+              alpha_gate_min=getattr(args, "alpha_gate_min", 0.15),
+              alpha_gate_max=getattr(args, "alpha_gate_max", 0.65),
+              v2_soft_joint_start_epoch=getattr(args, "v2_soft_joint_start_epoch", 5),
+              v2_soft_joint_warmup_epochs=getattr(args, "v2_soft_joint_warmup_epochs", 5),
+              use_stopgrad_grade_for_cond=getattr(args, "use_stopgrad_grade_for_cond", True),
+              teacher_force_grade_epochs=getattr(args, "teacher_force_grade_epochs", 0),
+              joint_graph_w_00_11=getattr(args, "joint_graph_w_00_11", 1.0),
+              joint_graph_w_11_21=getattr(args, "joint_graph_w_11_21", 0.6),
+              joint_graph_w_11_12=getattr(args, "joint_graph_w_11_12", 1.2),
+              joint_graph_w_21_22=getattr(args, "joint_graph_w_21_22", 0.8),
+              joint_graph_w_12_22=getattr(args, "joint_graph_w_12_22", 0.7),
+              joint_graph_w_22_32=getattr(args, "joint_graph_w_22_32", 1.5),
             )
             with open(os.path.join(output_dir, "predictions.csv"), mode='w', newline='') as fcsv:
               if pred_rows:
@@ -1712,7 +1733,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_stage_v2",
         "advCheX_hyp_multi_grade_stage_v1",
         "advCheX_hyp_multi_grade_stage_sep_v1",
+        "advCheX_hyp_grade_stage_v2",
       }:
+        return
+
+      if len(mean_auc) == 0 or len(metric_dict.get("auc", [])) == 0:
         return
 
       mean_auc,mean_mcc,mean_ap,mean_f1 = np.array(mean_auc),np.array(mean_mcc),np.array(mean_ap),np.array(mean_f1)

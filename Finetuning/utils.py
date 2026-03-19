@@ -1728,6 +1728,28 @@ def sum_like(x, axis=1, keepdims=True):
     return x.sum(axis=axis, keepdims=keepdims)
 
 
+def build_v2_joint_graph_distance_matrix_numpy(joint_graph_w_00_11=1.0, joint_graph_w_11_21=0.6,
+                                             joint_graph_w_11_12=1.2, joint_graph_w_21_22=0.8,
+                                             joint_graph_w_12_22=0.7, joint_graph_w_22_32=1.5):
+    inf = 1e9
+    D = np.full((6, 6), inf, dtype=np.float32)
+    np.fill_diagonal(D, 0.0)
+    edges = [
+        (0, 1, joint_graph_w_00_11),
+        (1, 3, joint_graph_w_11_21),
+        (1, 2, joint_graph_w_11_12),
+        (3, 4, joint_graph_w_21_22),
+        (2, 4, joint_graph_w_12_22),
+        (4, 5, joint_graph_w_22_32),
+    ]
+    for i, j, w in edges:
+        D[i, j] = min(D[i, j], float(w))
+        D[j, i] = min(D[j, i], float(w))
+    for k in range(6):
+        D = np.minimum(D, D[:, [k]] + D[[k], :])
+    return D
+
+
 def compose_v2_joint_predictions(p_ge_grade, p_ge_stage, q1_logit, q2_logit, alpha_gate_min=0.15, alpha_gate_max=0.65,
                                  joint_beta_stage=0.5, joint_gamma_cond=0.5, eps=1e-8):
     pG = corn_probs_to_class_probs_torch(p_ge_grade)
@@ -1786,43 +1808,63 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
     joint_pred_fused = np.argmax(p_joint6, axis=1)
     grade_pred_fused = np.array([JOINT_LABELS[idx][0] for idx in joint_pred_fused])
     stage_pred_fused = np.array([JOINT_LABELS[idx][1] for idx in joint_pred_fused])
+    joint_graph_w_00_11 = float(kwargs['joint_graph_w_00_11'])
+    joint_graph_w_11_21 = float(kwargs['joint_graph_w_11_21'])
+    joint_graph_w_11_12 = float(kwargs['joint_graph_w_11_12'])
+    joint_graph_w_21_22 = float(kwargs['joint_graph_w_21_22'])
+    joint_graph_w_12_22 = float(kwargs['joint_graph_w_12_22'])
+    joint_graph_w_22_32 = float(kwargs['joint_graph_w_22_32'])
+    D = build_v2_joint_graph_distance_matrix_numpy(
+        joint_graph_w_00_11=joint_graph_w_00_11,
+        joint_graph_w_11_21=joint_graph_w_11_21,
+        joint_graph_w_11_12=joint_graph_w_11_12,
+        joint_graph_w_21_22=joint_graph_w_21_22,
+        joint_graph_w_12_22=joint_graph_w_12_22,
+        joint_graph_w_22_32=joint_graph_w_22_32,
+    )
+    joint_gt = np.array([JOINT_LABEL_TO_INDEX[(int(g), int(s))] for g, s in zip(grades_true, stages_true)])
+    fused_pairs = [(int(g), int(s)) for g, s in zip(grade_pred_fused, stage_pred_fused)]
+    fused_invalid = np.array([pair not in JOINT_LABEL_TO_INDEX for pair in fused_pairs], dtype=np.float32)
+    expected_graph_cost = float(np.mean(np.sum(p_joint6 * D[joint_gt], axis=1)))
     metrics.update({
         'Confmat_grade_raw': confusion_matrix(grades_true, grade_pred_raw, labels=[0,1,2,3]).tolist(),
         'Confmat_grade_fused': confusion_matrix(grades_true, grade_pred_fused, labels=[0,1,2,3]).tolist(),
         'Confmat_stage_raw': confusion_matrix(stages_true, stage_pred_raw, labels=[0,1,2]).tolist(),
         'Confmat_stage_fused': confusion_matrix(stages_true, stage_pred_fused, labels=[0,1,2]).tolist(),
-        'Confmat_joint_fused_6class': confusion_matrix([JOINT_LABEL_TO_INDEX[(int(g), int(s))] for g, s in zip(grades_true, stages_true)], joint_pred_fused, labels=list(range(6))).tolist(),
-        'fused_invalid_rate': 0.0,
+        'Confmat_joint_fused_6class': confusion_matrix(joint_gt, joint_pred_fused, labels=list(range(6))).tolist(),
+        'fused_invalid_rate': float(fused_invalid.mean()) if fused_invalid.size > 0 else np.nan,
         'mean_alpha_gate': float(alpha.mean()),
         'mean_q1': float(q1.mean()),
         'mean_q2': float(q2.mean()),
-        'joint_graph_tau': float(kwargs.get('joint_graph_tau', 0.7)),
-        'joint_beta_stage': float(kwargs.get('joint_beta_stage', 0.5)),
-        'joint_gamma_cond': float(kwargs.get('joint_gamma_cond', 0.5)),
-        'lambda_stage_marg': float(kwargs.get('lambda_stage_marg', 0.8)),
-        'lambda_cond_stage': float(kwargs.get('lambda_cond_stage', 0.6)),
-        'lambda_soft_joint': float(kwargs.get('lambda_soft_joint', 0.15)),
-        'stage_fused_aux_weight': float(kwargs.get('stage_fused_aux_weight', 0.3)),
-        'cond_pos_weight_g1': float(kwargs.get('cond_pos_weight_g1', 3.0)),
-        'cond_pos_weight_g2': float(kwargs.get('cond_pos_weight_g2', 5.0)),
-        'alpha_gate_min': float(kwargs.get('alpha_gate_min', 0.15)),
-        'alpha_gate_max': float(kwargs.get('alpha_gate_max', 0.65)),
-        'v2_soft_joint_start_epoch': int(kwargs.get('v2_soft_joint_start_epoch', 5)),
-        'v2_soft_joint_warmup_epochs': int(kwargs.get('v2_soft_joint_warmup_epochs', 5)),
-        'use_stopgrad_grade_for_cond': bool(kwargs.get('use_stopgrad_grade_for_cond', True)),
-        'teacher_force_grade_epochs': '0 / not_used_in_v2_patch1',
+        'mean_expected_joint_graph_cost': expected_graph_cost,
+        'joint_graph_tau': float(kwargs['joint_graph_tau']),
+        'joint_beta_stage': float(kwargs['joint_beta_stage']),
+        'joint_gamma_cond': float(kwargs['joint_gamma_cond']),
+        'lambda_stage_marg': float(kwargs['lambda_stage_marg']),
+        'lambda_cond_stage': float(kwargs['lambda_cond_stage']),
+        'lambda_soft_joint': float(kwargs['lambda_soft_joint']),
+        'stage_fused_aux_weight': float(kwargs['stage_fused_aux_weight']),
+        'cond_pos_weight_g1': float(kwargs['cond_pos_weight_g1']),
+        'cond_pos_weight_g2': float(kwargs['cond_pos_weight_g2']),
+        'alpha_gate_min': float(kwargs['alpha_gate_min']),
+        'alpha_gate_max': float(kwargs['alpha_gate_max']),
+        'v2_soft_joint_start_epoch': int(kwargs['v2_soft_joint_start_epoch']),
+        'v2_soft_joint_warmup_epochs': int(kwargs['v2_soft_joint_warmup_epochs']),
+        'use_stopgrad_grade_for_cond': bool(kwargs['use_stopgrad_grade_for_cond']),
+        'teacher_force_grade_epochs': f"{int(kwargs['teacher_force_grade_epochs'])} / not_used_in_v2_patch1",
         'v2_disable_legacy_joint': True,
-        'joint_graph_w_00_11': float(kwargs.get('joint_graph_w_00_11', 1.0)),
-        'joint_graph_w_11_21': float(kwargs.get('joint_graph_w_11_21', 0.6)),
-        'joint_graph_w_11_12': float(kwargs.get('joint_graph_w_11_12', 1.2)),
-        'joint_graph_w_21_22': float(kwargs.get('joint_graph_w_21_22', 0.8)),
-        'joint_graph_w_12_22': float(kwargs.get('joint_graph_w_12_22', 0.7)),
-        'joint_graph_w_22_32': float(kwargs.get('joint_graph_w_22_32', 1.5)),
+        'joint_graph_w_00_11': joint_graph_w_00_11,
+        'joint_graph_w_11_21': joint_graph_w_11_21,
+        'joint_graph_w_11_12': joint_graph_w_11_12,
+        'joint_graph_w_21_22': joint_graph_w_21_22,
+        'joint_graph_w_12_22': joint_graph_w_12_22,
+        'joint_graph_w_22_32': joint_graph_w_22_32,
         'graph_edge_weights_summary': {
-            '00_11': float(kwargs.get('joint_graph_w_00_11', 1.0)), '11_21': float(kwargs.get('joint_graph_w_11_21', 0.6)),
-            '11_12': float(kwargs.get('joint_graph_w_11_12', 1.2)), '21_22': float(kwargs.get('joint_graph_w_21_22', 0.8)),
-            '12_22': float(kwargs.get('joint_graph_w_12_22', 0.7)), '22_32': float(kwargs.get('joint_graph_w_22_32', 1.5)),
+            '00_11': joint_graph_w_00_11, '11_21': joint_graph_w_11_21,
+            '11_12': joint_graph_w_11_12, '21_22': joint_graph_w_21_22,
+            '12_22': joint_graph_w_12_22, '22_32': joint_graph_w_22_32,
         },
+        'joint_graph_distance_matrix': D.tolist(),
     })
     mask_g1 = grades_true == 1
     mask_g2 = grades_true == 2
@@ -1830,7 +1872,7 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
     metrics['AUC_cond_21_vs22'] = safe_roc_auc((stages_true[mask_g2] == 1).astype(int), q2[mask_g2]) if mask_g2.sum() > 1 else np.nan
     _plot_confusion_matrix(confusion_matrix(grades_true, grade_pred_fused, labels=[0,1,2,3]), ["0","1","2","3"], 'Grade Fused Confmat', os.path.join(output_dir, 'Confmat_grade_fused.png'))
     _plot_confusion_matrix(confusion_matrix(stages_true, stage_pred_fused, labels=[0,1,2]), ["0","1","2"], 'Stage Fused Confmat', os.path.join(output_dir, 'Confmat_stage_fused.png'))
-    _plot_confusion_matrix(confusion_matrix([JOINT_LABEL_TO_INDEX[(int(g), int(s))] for g, s in zip(grades_true, stages_true)], joint_pred_fused, labels=list(range(6))), ["00","11","12","21","22","32"], 'Joint Fused Confmat', os.path.join(output_dir, 'Confmat_grade_stage_fused.png'))
+    _plot_confusion_matrix(confusion_matrix(joint_gt, joint_pred_fused, labels=list(range(6))), ["00","11","12","21","22","32"], 'Joint Fused Confmat', os.path.join(output_dir, 'Confmat_grade_stage_fused.png'))
     for i, row in enumerate(rows):
         row.update({
             'grade_pred_raw_v2': int(grade_pred_raw[i]), 'stage_pred_raw_v2': int(stage_pred_raw[i]),

@@ -687,15 +687,16 @@ def main(args):
 
     elif args.data_set == "advCheX_hyp_grade_stage_v2":
         diseases = ['grade', 'stage']
+        val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
         if args.mode == "train":
             dataset_train = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.train_list,
                 augment=build_transform_classification(normalize=args.normalization, mode="train", crop_size=args.input_size, resize=args.img_size),
                 few_shot=args.few_shot)
-            dataset_val = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.val_list,
+            dataset_val = advCheX_hyp_grade_stage_v2(images_path=val_images_root, file_path=args.val_list,
                 augment=build_transform_classification(normalize=args.normalization, mode="valid", crop_size=args.input_size, resize=args.img_size))
         else:
             dataset_train = None
-            dataset_val = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.val_list,
+            dataset_val = advCheX_hyp_grade_stage_v2(images_path=val_images_root, file_path=args.val_list,
                 augment=build_transform_classification(normalize=args.normalization, mode="valid", crop_size=args.input_size, resize=args.img_size)) if args.val_list else None
         dataset_test = advCheX_hyp_grade_stage_v2(images_path=args.data_dir, file_path=args.test_list,
             augment=build_transform_classification(normalize=args.normalization, mode="test", crop_size=args.input_size, resize=args.img_size))

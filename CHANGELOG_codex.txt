@@ -85,3 +85,7 @@ Changes: v1 测试路径复用 sep_v1 decoder（non/threshold/ev/temp_threshold/
 [2026-03-19] -codex
 Reason: 修复 advCheX_hyp_grade_stage_v2 在训练期验证输出收集阶段仍按旧 tuple 解包导致的崩溃，并落实 v2 单独损失打印模板。
 Changes: 在 engine._collect_outputs_multi 中新增 advCheX_hyp_grade_stage_v2 的 dict 输出分支，按 raw grade/stage CORN 概率继续收集与保存 thresholds（保持方案3A）；训练/验证 epoch 汇总新增 [MultiHead][Loss][v2] 专属打印模板，显式展示 loss_grade_main/loss_grade_soft/loss_stage_marg_ind/loss_stage_marg_fused/loss_cond_11_12/loss_cond_21_22/loss_soft_joint 以及 mean_alpha_gate/mean_q1/mean_q2/mean_expected_joint_graph_cost；不扩展 helper 返回签名，保持对 v1/sep_v1 的兼容性。
+
+[2026-03-19] -codex
+Reason: 修复 advCheX_hyp_grade_stage_v2 测试期 decoder/评估收尾逻辑遗漏与 v2 参数/图统计落盘不完整的问题。
+Changes: classification_engine 的多头测试分支为 v2 传递完整真实运行参数到 evaluate_grade_stage_v2，并将 dataset_tag 标记为 v2；测试后跳过通用多试次汇总白名单新增 advCheX_hyp_grade_stage_v2，同时增加空 metric 列表保护；advCheX_hyp_grade_stage_v2 的 dataset_val 构建改为真正支持 val_data_dir；evaluate_grade_stage_v2 改为基于真实 joint graph 边权重计算 distance matrix、fused_invalid_rate 与 mean_expected_joint_graph_cost，并将 joint_graph_distance_matrix 与真实运行参数写入 metrics/result 摘要，避免默认值回填。
