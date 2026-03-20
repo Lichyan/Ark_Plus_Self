@@ -1048,8 +1048,15 @@ def _safe_kappa(y_true, y_pred):
         return np.nan
 
 
-def _decoder_objective_value(y_true, y_pred, objective, head="grade"):
+def _normalize_decoder_objective_name(objective):
     objective = str(objective or "qwk").lower()
+    if objective == "marco_f1":
+        return "macro_f1"
+    return objective
+
+
+def _decoder_objective_value(y_true, y_pred, objective, head="grade"):
+    objective = _normalize_decoder_objective_name(objective)
     qwk = _safe_kappa(y_true, y_pred)
     macro = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
     bal = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
@@ -1200,6 +1207,7 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
     stage_pred = stage_pred_raw.copy()
 
     mode = str(decodermode or "non").lower()
+    decoder_objective = _normalize_decoder_objective_name(decoder_objective)
     saved_thr_grade, saved_thr_stage = extract_saved_thresholds_for_sep(thresholds_src) if decoder_use_saved_thresholds else (None, None)
     has_complete_saved_thresholds = (saved_thr_grade is not None and saved_thr_stage is not None)
 
@@ -1782,6 +1790,30 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
                             decoder_keep_raw_metrics=True, thresholds_src=None,
                             val_y_grade=None, val_y_stage=None, val_p_ge_grade=None, val_p_ge_stage=None,
                             dataset_tag='dataset', aux_scores=None, **kwargs):
+    sep_kwargs = {
+        "sep_head_mode": kwargs.get("sep_head_mode", "flat"),
+        "loss_w_anyhtn": kwargs.get("loss_w_anyhtn", 1.0),
+        "pos_weight_anyhtn": kwargs.get("pos_weight_anyhtn", None),
+        "coarse_auc_loss_mode": kwargs.get("coarse_auc_loss_mode", "none"),
+        "loss_w_anyhtn_auc": kwargs.get("loss_w_anyhtn_auc", 0.0),
+        "auc_margin": kwargs.get("auc_margin", 1.0),
+        "auc_pair_subsample": kwargs.get("auc_pair_subsample", 256),
+        "fine_soft_label_mode": kwargs.get("fine_soft_label_mode", "none"),
+        "grade_soft_center": kwargs.get("grade_soft_center", 0.85),
+        "stage_label_smoothing": kwargs.get("stage_label_smoothing", 0.05),
+        "loss_w_grade_soft": kwargs.get("loss_w_grade_soft", 0.2),
+        "loss_w_stage_soft": kwargs.get("loss_w_stage_soft", 0.1),
+        "loss_w_stage_smooth": kwargs.get("loss_w_stage_smooth", 1.0),
+        "dataset_tag": dataset_tag,
+        "v1_soft_label_mode": kwargs.get("v1_soft_label_mode", "none"),
+        "grade_soft_scheme": kwargs.get("grade_soft_scheme", "asym_v1"),
+        "stage_soft_scheme": kwargs.get("stage_soft_scheme", "asym_v1"),
+        "lambda_incomp": kwargs.get("lambda_incomp", 0.0),
+        "lambda_joint": kwargs.get("lambda_joint", 0.0),
+        "joint_gate": kwargs.get("joint_gate", "htn_only"),
+        "joint_detach": kwargs.get("joint_detach", "both"),
+        "incomp_mode": kwargs.get("incomp_mode", "mask_sum"),
+    }
     metrics, rows, report_lines = evaluate_grade_stage_sep(
         y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir, path_list=path_list, modethese=modethese,
         decodermode=decodermode, decoder_objective=decoder_objective, decoder_bins=decoder_bins,
@@ -1789,8 +1821,8 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
         temperature_init=temperature_init, temperature_min=temperature_min, temperature_max=temperature_max,
         temperature_grid_size=temperature_grid_size, decoder_keep_raw_metrics=decoder_keep_raw_metrics,
         thresholds_src=thresholds_src, val_y_grade=val_y_grade, val_y_stage=val_y_stage,
-        val_p_ge_grade=val_p_ge_grade, val_p_ge_stage=val_p_ge_stage, dataset_tag=dataset_tag,
-        aux_scores=aux_scores, **kwargs)
+        val_p_ge_grade=val_p_ge_grade, val_p_ge_stage=val_p_ge_stage,
+        aux_scores=aux_scores, **sep_kwargs)
     if aux_scores is None or 'p_joint6' not in aux_scores:
         return metrics, rows, report_lines
     p_joint6 = np.asarray(aux_scores['p_joint6'])

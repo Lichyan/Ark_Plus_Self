@@ -89,3 +89,7 @@ Changes: 在 engine._collect_outputs_multi 中新增 advCheX_hyp_grade_stage_v2 
 [2026-03-19] -codex
 Reason: 修复 advCheX_hyp_grade_stage_v2 测试期 decoder/评估收尾逻辑遗漏与 v2 参数/图统计落盘不完整的问题。
 Changes: classification_engine 的多头测试分支为 v2 传递完整真实运行参数到 evaluate_grade_stage_v2，并将 dataset_tag 标记为 v2；测试后跳过通用多试次汇总白名单新增 advCheX_hyp_grade_stage_v2，同时增加空 metric 列表保护；advCheX_hyp_grade_stage_v2 的 dataset_val 构建改为真正支持 val_data_dir；evaluate_grade_stage_v2 改为基于真实 joint graph 边权重计算 distance matrix、fused_invalid_rate 与 mean_expected_joint_graph_cost，并将 joint_graph_distance_matrix 与真实运行参数写入 metrics/result 摘要，避免默认值回填。
+
+[2026-03-20] -codex
+Reason: 修复 advCheX_hyp_grade_stage_v2 测试评估 wrapper 将 v2-only 参数错误透传给 evaluate_grade_stage_sep 导致 TypeError 的问题，并补充 decoder objective 兼容别名。
+Changes: evaluate_grade_stage_v2 现在只向 evaluate_grade_stage_sep 传递其签名支持的参数，v2-only 配置保留在 wrapper 内部用于 fused/joint 评估，避免影响 v1/sep_v1 的既有执行逻辑；新增 decoder objective 名称规范化 helper，将常见拼写 marco_f1 兼容映射到 macro_f1，以减少 temp_ev/threshold 搜索时的参数兼容坑点。
