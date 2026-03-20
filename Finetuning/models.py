@@ -22,7 +22,7 @@ import simmim
 #from upernet_swin_transformer import UperNet_swin
 from convnext import ConvNeXt
 from resnet import ResNet50
-from utils import load_swin_pretrained
+from utils import load_swin_pretrained, corn_marginal_ge_probs
 from lora import inject_lora, freeze_non_lora_parameters
 
 try:
@@ -233,13 +233,14 @@ def build_classification_model(args):
         print("Not provide {} pretrained weights for {}.".format(args.init, args.model_name))
         raise Exception("Please provide correct parameters to load the model!")
 
-    if getattr(args, "data_set", "") in {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1"}:
+    if getattr(args, "data_set", "") in {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2"}:
         model = MultiHeadOrdinalModel(
             backbone=model,
             num_class_grade=getattr(args, "num_class_grade", 3),
             num_class_stage=getattr(args, "num_class_stage", 2),
             ordinal_mode=getattr(args, "ordinal_mode", "default"),
             sep_head_mode=getattr(args, "sep_head_mode", "flat"),
+            data_set=getattr(args, "data_set", ""),
         )
 
     if getattr(args, "use_lora", False):
@@ -284,11 +285,14 @@ def _extract_backbone_features(backbone, x):
 
 
 class MultiHeadOrdinalModel(nn.Module):
-    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral", sep_head_mode="flat"):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral", sep_head_mode="flat", data_set=""):
         super().__init__()
         self.backbone = backbone
         self.ordinal_mode = str(ordinal_mode).lower()
         self.sep_head_mode = str(sep_head_mode).lower()
+        self.data_set = str(data_set)
+        self.is_v2 = self.data_set == "advCheX_hyp_grade_stage_v2"
+        self.use_stopgrad_grade_for_cond = True
         feature_dim = getattr(backbone, "num_features", None)
         if feature_dim is None:
             feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
@@ -306,6 +310,25 @@ class MultiHeadOrdinalModel(nn.Module):
             else:
                 self.head_grade = nn.Linear(feature_dim, num_class_grade)
                 self.head_stage = nn.Linear(feature_dim, num_class_stage)
+            if self.is_v2:
+                cond_dim = feature_dim + 4
+                self.head_cond_q1 = nn.Linear(cond_dim, 1)
+                self.head_cond_q2 = nn.Linear(cond_dim, 1)
+
+    def _build_cond_context(self, grade_logits):
+        if self.ordinal_mode == "corn":
+            ge = corn_marginal_ge_probs(torch.sigmoid(grade_logits))
+        else:
+            ge = torch.sigmoid(grade_logits)
+        p0 = 1.0 - ge[:, 0]
+        p1 = torch.clamp(ge[:, 0] - ge[:, 1], 0.0, 1.0)
+        p2 = torch.clamp(ge[:, 1] - ge[:, 2], 0.0, 1.0)
+        p3 = torch.clamp(ge[:, 2], 0.0, 1.0)
+        p_grade = torch.stack([p0, p1, p2, p3], dim=1)
+        p_grade = p_grade / p_grade.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        if self.use_stopgrad_grade_for_cond:
+            p_grade = p_grade.detach()
+        return p_grade
 
     def forward(self, x):
         feats = _extract_backbone_features(self.backbone, x)
@@ -320,7 +343,16 @@ class MultiHeadOrdinalModel(nn.Module):
             }
         logits_grade = self.head_grade(feats)
         logits_stage = self.head_stage(feats)
-        return logits_grade, logits_stage
+        if not self.is_v2:
+            return logits_grade, logits_stage
+        p_grade_context = self._build_cond_context(logits_grade)
+        cond_input = torch.cat([feats, p_grade_context], dim=1)
+        return {
+            "grade_logits": logits_grade,
+            "stage_ind_logits": logits_stage,
+            "q1_logit": self.head_cond_q1(cond_input),
+            "q2_logit": self.head_cond_q2(cond_input),
+        }
 
 
 class CoralHead(nn.Module):
