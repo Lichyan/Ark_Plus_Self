@@ -241,6 +241,10 @@ def build_classification_model(args):
             ordinal_mode=getattr(args, "ordinal_mode", "default"),
             sep_head_mode=getattr(args, "sep_head_mode", "flat"),
             data_set=getattr(args, "data_set", ""),
+            lpv3_enable_neck=getattr(args, "lpv3_enable_neck", False),
+            lpv3_neck_hidden_dim=getattr(args, "lpv3_neck_hidden_dim", 512),
+            lpv3_neck_out_dim=getattr(args, "lpv3_neck_out_dim", 128),
+            lpv3_neck_dropout=getattr(args, "lpv3_neck_dropout", 0.2),
         )
 
     if getattr(args, "use_lora", False):
@@ -285,7 +289,8 @@ def _extract_backbone_features(backbone, x):
 
 
 class MultiHeadOrdinalModel(nn.Module):
-    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral", sep_head_mode="flat", data_set=""):
+    def __init__(self, backbone, num_class_grade=3, num_class_stage=2, ordinal_mode="coral", sep_head_mode="flat", data_set="",
+                 lpv3_enable_neck=False, lpv3_neck_hidden_dim=512, lpv3_neck_out_dim=128, lpv3_neck_dropout=0.2):
         super().__init__()
         self.backbone = backbone
         self.ordinal_mode = str(ordinal_mode).lower()
@@ -293,25 +298,46 @@ class MultiHeadOrdinalModel(nn.Module):
         self.data_set = str(data_set)
         self.is_v2 = self.data_set == "advCheX_hyp_grade_stage_v2"
         self.use_stopgrad_grade_for_cond = True
+        self.lpv3_enable_neck = bool(lpv3_enable_neck) and self.is_v2
         feature_dim = getattr(backbone, "num_features", None)
         if feature_dim is None:
             feature_dim = getattr(backbone, "fc", None).in_features if hasattr(backbone, "fc") else None
         if feature_dim is None:
             raise ValueError("无法推断 backbone 特征维度")
 
+        neck_out_dim = feature_dim
+        if self.lpv3_enable_neck:
+            neck_hidden_dim = int(lpv3_neck_hidden_dim)
+            neck_out_dim = int(lpv3_neck_out_dim)
+            neck_dropout = float(lpv3_neck_dropout)
+            self.neck = nn.Sequential(
+                nn.Linear(feature_dim, neck_hidden_dim),
+                nn.LayerNorm(neck_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(neck_dropout),
+                nn.Linear(neck_hidden_dim, neck_out_dim),
+                nn.LayerNorm(neck_out_dim),
+                nn.GELU(),
+            )
+        else:
+            self.neck = nn.Identity()
+
+        self.feature_dim_before_neck = int(feature_dim)
+        self.shared_feature_dim = int(neck_out_dim)
+
         if self.sep_head_mode == "coarse_fine":
-            self.head_anyhtn = nn.Linear(feature_dim, 1)
-            self.head_grade_pos = nn.Linear(feature_dim, 2)
-            self.head_stage_pos = nn.Linear(feature_dim, 1)
+            self.head_anyhtn = nn.Linear(self.shared_feature_dim, 1)
+            self.head_grade_pos = nn.Linear(self.shared_feature_dim, 2)
+            self.head_stage_pos = nn.Linear(self.shared_feature_dim, 1)
         else:
             if self.ordinal_mode == "coral":
-                self.head_grade = CoralHead(feature_dim, num_class_grade)
-                self.head_stage = CoralHead(feature_dim, num_class_stage)
+                self.head_grade = CoralHead(self.shared_feature_dim, num_class_grade)
+                self.head_stage = CoralHead(self.shared_feature_dim, num_class_stage)
             else:
-                self.head_grade = nn.Linear(feature_dim, num_class_grade)
-                self.head_stage = nn.Linear(feature_dim, num_class_stage)
+                self.head_grade = nn.Linear(self.shared_feature_dim, num_class_grade)
+                self.head_stage = nn.Linear(self.shared_feature_dim, num_class_stage)
             if self.is_v2:
-                cond_dim = feature_dim + 4
+                cond_dim = self.shared_feature_dim + 4
                 self.head_cond_q1 = nn.Linear(cond_dim, 1)
                 self.head_cond_q2 = nn.Linear(cond_dim, 1)
 
@@ -332,27 +358,32 @@ class MultiHeadOrdinalModel(nn.Module):
 
     def forward(self, x):
         feats = _extract_backbone_features(self.backbone, x)
+        z_shared = self.neck(feats)
         if self.sep_head_mode == "coarse_fine":
-            logits_anyhtn = self.head_anyhtn(feats)
-            logits_grade_pos = self.head_grade_pos(feats)
-            logits_stage_pos = self.head_stage_pos(feats)
+            logits_anyhtn = self.head_anyhtn(z_shared)
+            logits_grade_pos = self.head_grade_pos(z_shared)
+            logits_stage_pos = self.head_stage_pos(z_shared)
             return {
                 "anyhtn": logits_anyhtn,
                 "grade_pos": logits_grade_pos,
                 "stage_pos": logits_stage_pos,
             }
-        logits_grade = self.head_grade(feats)
-        logits_stage = self.head_stage(feats)
+        logits_grade = self.head_grade(z_shared)
+        logits_stage = self.head_stage(z_shared)
         if not self.is_v2:
             return logits_grade, logits_stage
         p_grade_context = self._build_cond_context(logits_grade)
-        cond_input = torch.cat([feats, p_grade_context], dim=1)
+        cond_input = torch.cat([z_shared, p_grade_context], dim=1)
         return {
             "grade_logits": logits_grade,
             "stage_ind_logits": logits_stage,
             "q1_logit": self.head_cond_q1(cond_input),
             "q2_logit": self.head_cond_q2(cond_input),
+            "features_before_neck": feats,
+            "shared_features": z_shared,
+            "lpv3_enable_neck": self.lpv3_enable_neck,
         }
+
 
 
 class CoralHead(nn.Module):
