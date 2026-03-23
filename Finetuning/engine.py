@@ -868,6 +868,7 @@ def _build_joint_aware_sampling(dataset_train, args, base_weights=None):
 
 
 def classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test, test_diseases=None):
+  sampler_summary = None
   device = torch.device(args.device)
   cudnn.benchmark = True
 
