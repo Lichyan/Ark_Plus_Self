@@ -128,6 +128,9 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
         self.ordinal_mode = ordinal_mode
         self.current_epoch = 0
         self.last_components = None
+        self.lpv3_active = False
+        self.lpv3_enable_cond_after_epoch = 3
+        self.lpv3_enable_soft_joint_after_epoch = 10
 
     def _compute_pairwise_auc_loss(self, scores, labels):
         mode = str(getattr(self, "coarse_auc_loss_mode", "none") or "none").lower()
@@ -265,7 +268,10 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
 
 
     def _v2_soft_joint_factor(self):
-        start_epoch = int(getattr(self, "v2_soft_joint_start_epoch", 5) or 5)
+        if getattr(self, "lpv3_active", False):
+            start_epoch = max(int(getattr(self, "v2_soft_joint_start_epoch", 5) or 5), int(getattr(self, "lpv3_enable_soft_joint_after_epoch", 10) or 10))
+        else:
+            start_epoch = int(getattr(self, "v2_soft_joint_start_epoch", 5) or 5)
         warmup_epochs = int(getattr(self, "v2_soft_joint_warmup_epochs", 5) or 5)
         if self.current_epoch < start_epoch:
             return 0.0
@@ -471,15 +477,16 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             loss_stage_marg_fused = F.nll_loss(torch.log(fused['pS_fused3'].clamp_min(1e-8)), raw_stage.long())
 
             zero = loss_grade_base.new_tensor(0.0)
+            cond_enabled = (not getattr(self, 'lpv3_active', False)) or (self.current_epoch >= int(getattr(self, 'lpv3_enable_cond_after_epoch', 3) or 3))
             mask_g1 = raw_grade == 1
             mask_g2 = raw_grade == 2
-            if mask_g1.any():
+            if cond_enabled and mask_g1.any():
                 z1 = (raw_stage[mask_g1] == 1).float()
                 pos_w1 = torch.tensor(float(getattr(self, 'cond_pos_weight_g1', 3.0)), device=z1.device)
                 loss_cond_11_12 = F.binary_cross_entropy_with_logits(outputs['q1_logit'][mask_g1].view(-1), z1, pos_weight=pos_w1)
             else:
                 loss_cond_11_12 = zero
-            if mask_g2.any():
+            if cond_enabled and mask_g2.any():
                 z2 = (raw_stage[mask_g2] == 1).float()
                 pos_w2 = torch.tensor(float(getattr(self, 'cond_pos_weight_g2', 5.0)), device=z2.device)
                 loss_cond_21_22 = F.binary_cross_entropy_with_logits(outputs['q2_logit'][mask_g2].view(-1), z2, pos_weight=pos_w2)
@@ -492,7 +499,15 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             loss_soft_joint = (-(soft_targets * torch.log(fused['P_joint6'].clamp_min(1e-8))).sum(dim=1)).mean()
             expected_cost = (fused['P_joint6'] * D[targets['joint_id'].long()]).sum(dim=1).mean()
             lambda_soft_joint_eff = float(getattr(self, 'lambda_soft_joint', 0.15) or 0.0) * self._v2_soft_joint_factor()
+            if getattr(self, 'lpv3_active', False) and self.current_epoch < int(getattr(self, 'lpv3_enable_soft_joint_after_epoch', 10) or 10):
+                lambda_soft_joint_eff = 0.0
             loss = loss_grade + float(getattr(self, 'lambda_stage_marg', 0.8)) * (loss_stage_marg_ind + float(getattr(self, 'stage_fused_aux_weight', 0.3)) * loss_stage_marg_fused) + float(getattr(self, 'lambda_cond_stage', 0.6)) * (loss_cond_11_12 + loss_cond_21_22) + lambda_soft_joint_eff * loss_soft_joint
+            feature_before = outputs.get('features_before_neck')
+            feature_after = outputs.get('shared_features')
+            mean_feature_norm_before = float(feature_before.norm(dim=1).mean().detach().cpu()) if isinstance(feature_before, torch.Tensor) else 0.0
+            mean_feature_norm_after = float(feature_after.norm(dim=1).mean().detach().cpu()) if isinstance(feature_after, torch.Tensor) else 0.0
+            joint_ids = targets['joint_id'].long()
+            present = torch.bincount(joint_ids, minlength=len(JOINT_LABELS)) > 0
             self.last_components = {
                 'loss_grade_main': float(loss_grade_base.detach().cpu()),
                 'loss_grade_soft': float(loss_grade_soft.detach().cpu()),
@@ -506,6 +521,14 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 'mean_q2': float(fused['q2'].mean().detach().cpu()),
                 'mean_expected_joint_graph_cost': float(expected_cost.detach().cpu()),
                 'lambda_soft_joint_eff': float(lambda_soft_joint_eff),
+                'mean_feature_norm_before_neck': mean_feature_norm_before,
+                'mean_feature_norm_after_neck': mean_feature_norm_after,
+                'mean_neck_norm': mean_feature_norm_after,
+                'batch_joint_present_classes': float(present.sum().detach().cpu()),
+                'batch_has_11_ratio': float(present[JOINT_LABEL_TO_INDEX[(1, 1)]].float().detach().cpu()),
+                'batch_has_21_ratio': float(present[JOINT_LABEL_TO_INDEX[(2, 1)]].float().detach().cpu()),
+                'batch_has_32_ratio': float(present[JOINT_LABEL_TO_INDEX[(3, 2)]].float().detach().cpu()),
+                'cond_enabled': float(cond_enabled),
                 'loss_total': float(loss.detach().cpu()),
             }
             return loss
@@ -779,7 +802,73 @@ def _load_ordinal_thresholds(saved_model, args):
             pass
     return None
 
+def _is_lpv3_active(args):
+  return bool(getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_v2" and getattr(args, "lpv3_enable_neck", False))
+
+
+def _build_lpv3_config(args):
+  return {
+    "lpv3_enable_neck": bool(getattr(args, "lpv3_enable_neck", False)),
+    "lpv3_neck_hidden_dim": int(getattr(args, "lpv3_neck_hidden_dim", 512)),
+    "lpv3_neck_out_dim": int(getattr(args, "lpv3_neck_out_dim", 128)),
+    "lpv3_neck_dropout": float(getattr(args, "lpv3_neck_dropout", 0.2)),
+    "lpv3_joint_aware_sampler": bool(getattr(args, "lpv3_joint_aware_sampler", False)),
+    "lpv3_sampler_mode": str(getattr(args, "lpv3_sampler_mode", "joint_inv_freq")),
+    "lpv3_sampler_power": float(getattr(args, "lpv3_sampler_power", 0.5)),
+    "lpv3_sampler_cap": float(getattr(args, "lpv3_sampler_cap", 5.0)),
+    "lpv3_sampler_floor": float(getattr(args, "lpv3_sampler_floor", 1.0)),
+    "lpv3_sampler_boost_11": float(getattr(args, "lpv3_sampler_boost_11", 2.0)),
+    "lpv3_sampler_boost_21": float(getattr(args, "lpv3_sampler_boost_21", 4.0)),
+    "lpv3_sampler_boost_32": float(getattr(args, "lpv3_sampler_boost_32", 1.5)),
+    "lpv3_sampler_boost_12": float(getattr(args, "lpv3_sampler_boost_12", 1.0)),
+    "lpv3_sampler_boost_22": float(getattr(args, "lpv3_sampler_boost_22", 1.0)),
+    "lpv3_stageA_epochs": int(getattr(args, "lpv3_stageA_epochs", 5)),
+    "lpv3_enable_cond_after_epoch": int(getattr(args, "lpv3_enable_cond_after_epoch", 3)),
+    "lpv3_enable_soft_joint_after_epoch": int(getattr(args, "lpv3_enable_soft_joint_after_epoch", 10)),
+  }
+
+
+def _build_joint_aware_sampling(dataset_train, args, base_weights=None):
+  joint_ids = np.array(getattr(dataset_train, "joint_ids", []), dtype=np.int64)
+  if joint_ids.size == 0:
+    return None
+  counts = np.bincount(joint_ids, minlength=len(JOINT_LABELS)).astype(np.float64)
+  counts_safe = np.maximum(counts, 1.0)
+  power = float(getattr(args, "lpv3_sampler_power", 0.5) or 0.5)
+  floor = float(getattr(args, "lpv3_sampler_floor", 1.0) or 1.0)
+  cap = float(getattr(args, "lpv3_sampler_cap", 5.0) or 5.0)
+  base_joint = (1.0 / counts_safe) ** power
+  boost_map = {
+    JOINT_LABEL_TO_INDEX[(1, 1)]: float(getattr(args, "lpv3_sampler_boost_11", 2.0) or 1.0),
+    JOINT_LABEL_TO_INDEX[(1, 2)]: float(getattr(args, "lpv3_sampler_boost_12", 1.0) or 1.0),
+    JOINT_LABEL_TO_INDEX[(2, 1)]: float(getattr(args, "lpv3_sampler_boost_21", 4.0) or 1.0),
+    JOINT_LABEL_TO_INDEX[(2, 2)]: float(getattr(args, "lpv3_sampler_boost_22", 1.0) or 1.0),
+    JOINT_LABEL_TO_INDEX[(3, 2)]: float(getattr(args, "lpv3_sampler_boost_32", 1.5) or 1.0),
+  }
+  for idx, boost in boost_map.items():
+    base_joint[idx] *= boost
+  joint_weights = np.clip(base_joint[joint_ids], floor, cap)
+  final_weights = joint_weights.copy()
+  if base_weights is not None:
+    final_weights = np.asarray(base_weights, dtype=np.float64) * final_weights
+  replacement = True
+  summary = {
+    "enabled": True,
+    "replacement": replacement,
+    "joint_counts": {f"{g}{s}": int(counts[idx]) for idx, (g, s) in enumerate(JOINT_LABELS)},
+    "mean_joint_weight": {},
+    "final_weight_min": float(final_weights.min()) if final_weights.size else 0.0,
+    "final_weight_max": float(final_weights.max()) if final_weights.size else 0.0,
+    "final_weight_mean": float(final_weights.mean()) if final_weights.size else 0.0,
+  }
+  for idx, (g, s) in enumerate(JOINT_LABELS):
+    mask = joint_ids == idx
+    summary["mean_joint_weight"][f"{g}{s}"] = float(final_weights[mask].mean()) if mask.any() else 0.0
+  return final_weights.tolist(), summary
+
+
 def classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test, test_diseases=None):
+  sampler_summary = None
   device = torch.device(args.device)
   cudnn.benchmark = True
 
@@ -808,13 +897,28 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       candidate = os.path.join(args.data_dir, "train_weights.csv")
       if os.path.exists(candidate):
         train_weights_path = candidate
+    base_weights = None
+    sampler_summary = None
     if train_weights_path is not None:
       df_w = pd.read_csv(train_weights_path)
       weight_col = "sample_weight" if "sample_weight" in df_w.columns else "weight"
       weight_map = dict(zip(df_w['Path'], df_w[weight_col]))
       rel_paths = [os.path.relpath(p, args.data_dir) for p in dataset_train.img_list]
-      weights = [weight_map.get(rp, 1.0) for rp in rel_paths]
-      sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+      base_weights = [weight_map.get(rp, 1.0) for rp in rel_paths]
+    use_lpv3_sampler = bool(getattr(args, 'data_set', '') == 'advCheX_hyp_grade_stage_v2' and getattr(args, 'lpv3_joint_aware_sampler', False))
+    if use_lpv3_sampler:
+      joint_sampler_pack = _build_joint_aware_sampling(dataset_train, args, base_weights=base_weights)
+      if joint_sampler_pack is not None:
+        final_weights, sampler_summary = joint_sampler_pack
+        sampler = WeightedRandomSampler(final_weights, num_samples=len(final_weights), replacement=True)
+        data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, sampler=sampler,
+                                       num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
+      else:
+        final_weights = None
+        data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, shuffle=True,
+                                       num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
+    elif base_weights is not None:
+      sampler = WeightedRandomSampler(base_weights, num_samples=len(base_weights), replacement=True)
       data_loader_train = DataLoader(dataset=dataset_train, batch_size=args.batch_size, sampler=sampler,
                                      num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)
     else:
@@ -827,6 +931,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
 
     # training phase
     print("start training....", flush=True)
+    lpv3_config = _build_lpv3_config(args)
+    if sampler_summary is not None:
+      print(f"[LPv3][Sampler] mode={lpv3_config['lpv3_sampler_mode']} power={lpv3_config['lpv3_sampler_power']} floor={lpv3_config['lpv3_sampler_floor']} cap={lpv3_config['lpv3_sampler_cap']} replacement={sampler_summary['replacement']}", flush=True)
+      print(f"[LPv3][Sampler] train_joint_counts={sampler_summary['joint_counts']}", flush=True)
+      print(f"[LPv3][Sampler] mean_joint_weight={sampler_summary['mean_joint_weight']} final_weight_stats=min:{sampler_summary['final_weight_min']:.4f} mean:{sampler_summary['final_weight_mean']:.4f} max:{sampler_summary['final_weight_max']:.4f}", flush=True)
     for i in range(args.start_index, args.num_trial):
       print("run:", str(i+1), flush=True)
       start_epoch = 0
@@ -900,6 +1009,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.v2_soft_joint_warmup_epochs = int(getattr(args, "v2_soft_joint_warmup_epochs", 5) or 5)
         criterion.alpha_gate_min = float(getattr(args, "alpha_gate_min", 0.15) or 0.15)
         criterion.alpha_gate_max = float(getattr(args, "alpha_gate_max", 0.65) or 0.65)
+        criterion.lpv3_active = _is_lpv3_active(args)
+        criterion.lpv3_enable_cond_after_epoch = int(getattr(args, "lpv3_enable_cond_after_epoch", 3) or 3)
+        criterion.lpv3_enable_soft_joint_after_epoch = int(getattr(args, "lpv3_enable_soft_joint_after_epoch", 10) or 10)
         criterion.joint_graph_w_00_11 = float(getattr(args, "joint_graph_w_00_11", 1.0) or 1.0)
         criterion.joint_graph_w_11_21 = float(getattr(args, "joint_graph_w_11_21", 0.6) or 0.6)
         criterion.joint_graph_w_11_12 = float(getattr(args, "joint_graph_w_11_12", 1.2) or 1.2)
@@ -977,7 +1089,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           if args.data_set in multihead_datasets:
             p.requires_grad = (
               name.startswith('head_grade') or name.startswith('head_stage') or
-              name.startswith('head_anyhtn') or name.startswith('head_grade_pos') or name.startswith('head_stage_pos') or name.startswith('head_') or name.startswith('cond_') or name.startswith('joint_')
+              name.startswith('head_anyhtn') or name.startswith('head_grade_pos') or name.startswith('head_stage_pos') or name.startswith('head_') or name.startswith('cond_') or name.startswith('joint_') or name.startswith('neck')
             )
           else:
             p.requires_grad = (name in ['head.weight', 'head.bias'])
@@ -994,11 +1106,12 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       #                                  threshold=0.0001, min_lr=0, verbose=True)
       
       # New freeze_encoder to ensure the linear probing
+      total = sum(p.numel() for p in model.parameters())
+      trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+      names = [n for n,p in model.named_parameters() if p.requires_grad]
+      neck_trainable = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and n.startswith('neck'))
+      print(f"[DEBUG] params total={total}, trainable={trainable_count}, neck_trainable={neck_trainable}", flush=True)
       if args.freeze_encoder and not getattr(args, "use_lora", False):
-        total = sum(p.numel() for p in model.parameters())
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        names = [n for n,p in model.named_parameters() if p.requires_grad]
-        print(f"[DEBUG] params total={total}, trainable={trainable}", flush=True)
         print(f"[DEBUG] trainable names: {names}", flush=True)
       trainable = [p for p in model.parameters() if p.requires_grad]
 
@@ -1071,6 +1184,23 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 val_components.get("mean_q2", 0.0),
                 val_components.get("mean_expected_joint_graph_cost", 0.0),
                 val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
+            print(
+              "[LPv3][BatchCoverage] train_present={:.2f} has11={:.2f} has21={:.2f} has32={:.2f} feat_in={:.4f} feat_out={:.4f} | val_present={:.2f} has11={:.2f} has21={:.2f} has32={:.2f} feat_in={:.4f} feat_out={:.4f}".format(
+                train_components.get("batch_joint_present_classes", 0.0),
+                train_components.get("batch_has_11_ratio", 0.0),
+                train_components.get("batch_has_21_ratio", 0.0),
+                train_components.get("batch_has_32_ratio", 0.0),
+                train_components.get("mean_feature_norm_before_neck", 0.0),
+                train_components.get("mean_feature_norm_after_neck", 0.0),
+                val_components.get("batch_joint_present_classes", 0.0),
+                val_components.get("batch_has_11_ratio", 0.0),
+                val_components.get("batch_has_21_ratio", 0.0),
+                val_components.get("batch_has_32_ratio", 0.0),
+                val_components.get("mean_feature_norm_before_neck", 0.0),
+                val_components.get("mean_feature_norm_after_neck", 0.0),
               ),
               flush=True,
             )
@@ -1527,10 +1657,14 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               if pred_rows:
                 writer_csv = csv.DictWriter(fcsv, fieldnames=list(pred_rows[0].keys()))
                 writer_csv.writeheader(); writer_csv.writerows(pred_rows)
+            metrics['lpv3'] = _build_lpv3_config(args)
+            if sampler_summary is not None:
+              metrics['lpv3']['sampler_summary'] = sampler_summary
             with open(os.path.join(output_dir, "metrics.json"), 'w') as fm:
               json.dump(metrics, fm, indent=2, ensure_ascii=False)
             with open(os.path.join(output_dir, "result.txt"), 'w', encoding='utf-8') as fr:
-              fr.write("\n".join(report_lines) + "\n")
+              lpv3_lines = ["[LPv3]"] + [f"{k}: {v}" for k, v in metrics['lpv3'].items()]
+              fr.write("\n".join(report_lines + [""] + lpv3_lines) + "\n")
             writer.write(json.dumps(metrics, ensure_ascii=False) + "\n")
             experiment = reader.readline()
             continue
