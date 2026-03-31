@@ -1113,6 +1113,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
       print(f"[DEBUG] params total={total}, trainable={trainable_count}, neck_trainable={neck_trainable}", flush=True)
       if args.freeze_encoder and not getattr(args, "use_lora", False):
         print(f"[DEBUG] trainable names: {names}", flush=True)
+      if getattr(args, "use_lora", False) and args.data_set == "advCheX_hyp_grade_stage_v2":
+        lora_trainable = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and ("lora_A" in n or "lora_B" in n))
+        prefixes = ["neck.", "head_grade.", "head_stage.", "head_cond_q1.", "head_cond_q2."]
+        print(f"[DEBUG][LoRA-v2] lora_trainable={lora_trainable}, neck_trainable={neck_trainable}", flush=True)
+        for prefix in prefixes:
+          prefix_names = [n for n in names if n.startswith(prefix)]
+          print(f"[DEBUG][LoRA-v2] {prefix} trainable_count={len(prefix_names)} names={prefix_names[:8]}", flush=True)
       trainable = [p for p in model.parameters() if p.requires_grad]
 
       optimizer = create_optimizer(args, trainable)

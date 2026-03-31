@@ -264,6 +264,20 @@ def build_classification_model(args):
                 preview += f", ... (共 {len(replaced)} 层)"
             print(f"[LoRA] 已注入的模块: {preview}")
         freeze_non_lora_parameters(model, keep_head=getattr(args, "lora_train_head", True))
+
+        if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_v2":
+            extra_train_prefixes = (
+                "neck.",
+                "head_grade.",
+                "head_stage.",
+                "head_cond_q1.",
+                "head_cond_q2.",
+            )
+            for name, param in model.named_parameters():
+                if name.startswith(extra_train_prefixes):
+                    param.requires_grad = True
+            print(f"[LoRA][v2] 额外解冻前缀: {extra_train_prefixes}")
+
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"[LoRA] 可训练参数量: {trainable:,} / {total:,}")
