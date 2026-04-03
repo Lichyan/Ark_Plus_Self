@@ -729,7 +729,10 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
             if batch is None:
                 continue
             samples, targets = batch
-            samples = samples.float().to(device)
+            if isinstance(samples, dict):
+                samples = {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in samples.items()}
+            else:
+                samples = samples.float().to(device)
             y_grade = targets["y_grade"].float().to(device)
             y_stage = targets["y_stage"].float().to(device)
             y_grade_all = torch.cat((y_grade_all, y_grade), 0)
@@ -882,7 +885,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -1018,6 +1021,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.joint_graph_w_21_22 = float(getattr(args, "joint_graph_w_21_22", 0.8) or 0.8)
         criterion.joint_graph_w_12_22 = float(getattr(args, "joint_graph_w_12_22", 0.7) or 0.7)
         criterion.joint_graph_w_22_32 = float(getattr(args, "joint_graph_w_22_32", 1.5) or 1.5)
+        if args.data_set == "advCheX_hyp_grade_stage_embtab_base":
+          criterion.v1_soft_label_mode = "full"
+          criterion.loss_w_stage_soft = 0.0
         if getattr(args, "pos_weight_anyhtn", None):
           try:
             criterion.pos_weight_anyhtn = torch.tensor(float(args.pos_weight_anyhtn), dtype=torch.float32, device=device)
@@ -1512,6 +1518,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           "advCheX_hyp_multi_level",
           "advCheX_hyp_multi_grade_stage_v1",
         "advCheX_hyp_multi_grade_stage_sep_v1",
+        "advCheX_hyp_grade_stage_embtab_base",
         }
         if use_cached:
           y_test = read_from_csv(gt_csv)
@@ -1563,7 +1570,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               aux_scores["pS_fused"] = p_test["pS_fused"].cpu().numpy()
               aux_scores["alpha_gate"] = p_test["alpha_gate"].cpu().numpy()
 
-          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2"}:
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1629,7 +1636,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
               loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
-              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else "v1")),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set == "advCheX_hyp_grade_stage_embtab_base" else "v1"))),
               v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
               grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
               stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
@@ -1667,6 +1674,26 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
             metrics['lpv3'] = _build_lpv3_config(args)
             if sampler_summary is not None:
               metrics['lpv3']['sampler_summary'] = sampler_summary
+            if args.data_set == "advCheX_hyp_grade_stage_embtab_base":
+              embtab_summary = {
+                "img_emb_dim": int(getattr(args, "img_emb_dim", 1376)),
+                "tab_dim": int(getattr(args, "tab_dim", 5)),
+                "img_hidden_dim": int(getattr(args, "img_hidden_dim", 512)),
+                "img_out_dim": int(getattr(args, "img_out_dim", 256)),
+                "tab_hidden_dim": int(getattr(args, "tab_hidden_dim", 32)),
+                "tab_out_dim": int(getattr(args, "tab_out_dim", 64)),
+                "fusion_hidden_dim": int(getattr(args, "fusion_hidden_dim", 192)),
+                "task_hidden_dim": int(getattr(args, "task_hidden_dim", 128)),
+                "grade_tab_scale": float(getattr(args, "grade_tab_scale", 0.3)),
+                "dropout_img": float(getattr(args, "dropout_img", 0.2)),
+                "dropout_tab": float(getattr(args, "dropout_tab", 0.1)),
+                "dropout_fusion": float(getattr(args, "dropout_fusion", 0.2)),
+                "embtab_stage_soft_label": False,
+                "grade_soft_scheme": str(getattr(args, "grade_soft_scheme", "asym_v1")),
+                "loss_w_grade_soft": float(getattr(args, "loss_w_grade_soft", 0.2)),
+              }
+              metrics["embtab_base"] = embtab_summary
+              report_lines.extend(["", "[embtab-base summary]"] + [f"{k}={v}" for k, v in embtab_summary.items()])
             with open(os.path.join(output_dir, "metrics.json"), 'w') as fm:
               json.dump(metrics, fm, indent=2, ensure_ascii=False)
             with open(os.path.join(output_dir, "result.txt"), 'w', encoding='utf-8') as fr:
@@ -1875,6 +1902,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_grade_stage_v1",
         "advCheX_hyp_multi_grade_stage_sep_v1",
         "advCheX_hyp_grade_stage_v2",
+        "advCheX_hyp_grade_stage_embtab_base",
       }:
         return
 
