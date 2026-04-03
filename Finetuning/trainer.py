@@ -6,6 +6,52 @@ from tqdm import tqdm
 from PIL import Image
 import numpy as np
 
+def _move_samples_to_cuda(samples):
+  if isinstance(samples, dict):
+    return {k: v.float().cuda() if torch.is_tensor(v) else v for k, v in samples.items()}
+  return samples.float().cuda()
+
+
+def _move_samples_to_device(samples, device):
+  if isinstance(samples, dict):
+    return {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in samples.items()}
+  return samples.float().to(device)
+
+
+def _infer_batch_shape(samples):
+  if isinstance(samples, dict):
+    key = "img_emb" if "img_emb" in samples else next(iter(samples.keys()))
+    tensor = samples[key]
+    bs = int(tensor.shape[0])
+    return bs, 1, "dict"
+  if len(samples.size()) == 4:
+    bs, _, _, _ = samples.size()
+    return bs, 1, "image4d"
+  if len(samples.size()) == 5:
+    bs, n_crops, _, _, _ = samples.size()
+    return bs, n_crops, "image5d"
+  if len(samples.size()) == 2:
+    bs, _ = samples.size()
+    return bs, 1, "embed2d"
+  raise ValueError(f"Unsupported sample shape: {samples.size()}")
+
+
+def _sample_stats(samples):
+  if isinstance(samples, dict):
+    key = "img_emb" if "img_emb" in samples else next(iter(samples.keys()))
+    base = samples[key]
+  else:
+    base = samples
+  return base.mean().item(), base.std().item()
+
+
+def _batch_size(samples):
+  if isinstance(samples, dict):
+    key = "img_emb" if "img_emb" in samples else next(iter(samples.keys()))
+    return int(samples[key].shape[0])
+  return int(samples.size(0))
+
+
 def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch):
   batch_time = MetricLogger('Time', ':6.3f')
   losses = MetricLogger('Loss', ':.4e')
@@ -23,7 +69,7 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
     if batch is None:
       continue
     samples, targets = batch
-    samples = samples.float().to(device)
+    samples = _move_samples_to_device(samples, device)
     if isinstance(targets, dict):
       targets = {
         k: (v.float() if k in ["y_grade", "y_stage"] else v).to(device)
@@ -44,7 +90,7 @@ def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch
     loss.backward()
     optimizer.step()
 
-    losses.update(loss.item(), samples.size(0))
+    losses.update(loss.item(), _batch_size(samples))
     batch_time.update(time.time() - end)
     end = time.time()
 
@@ -74,7 +120,7 @@ def evaluate(data_loader_val, device, model, criterion):
       if batch is None:
         continue
       samples, targets = batch
-      samples = samples.float().to(device)
+      samples = _move_samples_to_device(samples, device)
       if isinstance(targets, dict):
         targets = {
           k: (v.float() if k in ["y_grade", "y_stage"] else v).to(device)
@@ -91,7 +137,7 @@ def evaluate(data_loader_val, device, model, criterion):
           component_sums[key] = component_sums.get(key, 0.0) + float(val)
         component_count += 1
 
-      losses.update(loss.item(), samples.size(0))
+      losses.update(loss.item(), _batch_size(samples))
       batch_time.update(time.time() - end)
       end = time.time()
 
@@ -169,13 +215,15 @@ def test_classification(checkpoint, data_loader_test, device, args):
         targets = targets.cuda()
         y_test = torch.cat((y_test, targets), 0)
 
-      if len(samples.size()) == 4:
-        bs, c, h, w = samples.size()
-        n_crops = 1
-      elif len(samples.size()) == 5:
-        bs, n_crops, c, h, w = samples.size()
-
-      varInput = torch.autograd.Variable(samples.view(-1, c, h, w).cuda())
+      bs, n_crops, sample_mode = _infer_batch_shape(samples)
+      if sample_mode in {"image4d", "image5d"}:
+        if len(samples.size()) == 4:
+          _, c, h, w = samples.size()
+        else:
+          _, n_crops, c, h, w = samples.size()
+        varInput = torch.autograd.Variable(samples.view(-1, c, h, w).cuda())
+      else:
+        varInput = _move_samples_to_cuda(samples)
 
       out = model(varInput)
       if not printed:
@@ -188,8 +236,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
           print('[DEBUG] head.weight mean abs:', head.weight.abs().mean().item(), flush=True)
           print('[DEBUG] head.bias sigmoid :',
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
-        print('[DEBUG] first batch input  mean/std:',
-              samples.mean().item(), samples.std().item(), flush=True)
+        sm, ss = _sample_stats(samples)
+        print('[DEBUG] first batch input  mean/std:', sm, ss, flush=True)
         if isinstance(out, dict) and "anyhtn" in out:
           print('[DEBUG] first batch output mean/std:',
                 out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
@@ -310,13 +358,15 @@ def test_model(model, data_loader_test, args):
         targets = targets.cuda()
         y_test = torch.cat((y_test, targets), 0)
 
-      if len(samples.size()) == 4:
-        bs, c, h, w = samples.size()
-        n_crops = 1
-      elif len(samples.size()) == 5:
-        bs, n_crops, c, h, w = samples.size()
-
-      varInput = torch.autograd.Variable(samples.view(-1, c, h, w).cuda())
+      bs, n_crops, sample_mode = _infer_batch_shape(samples)
+      if sample_mode in {"image4d", "image5d"}:
+        if len(samples.size()) == 4:
+          _, c, h, w = samples.size()
+        else:
+          _, n_crops, c, h, w = samples.size()
+        varInput = torch.autograd.Variable(samples.view(-1, c, h, w).cuda())
+      else:
+        varInput = _move_samples_to_cuda(samples)
 
       out = model(varInput)
       if not printed:
@@ -329,8 +379,8 @@ def test_model(model, data_loader_test, args):
           print('[DEBUG] head.weight mean abs:', head.weight.abs().mean().item(), flush=True)
           print('[DEBUG] head.bias sigmoid :',
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
-        print('[DEBUG] first batch input  mean/std:',
-              samples.mean().item(), samples.std().item(), flush=True)
+        sm, ss = _sample_stats(samples)
+        print('[DEBUG] first batch input  mean/std:', sm, ss, flush=True)
         if isinstance(out, dict):
           print('[DEBUG] first batch output mean/std:',
                 out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
