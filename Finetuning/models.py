@@ -39,6 +39,23 @@ if add_safe_globals is not None:
 def build_classification_model(args):
     model = None
     print("Creating model...")
+    if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_embtab_base":
+        return EmbeddingTabularOrdinalModel(
+            img_emb_dim=getattr(args, "img_emb_dim", 1376),
+            tab_dim=getattr(args, "tab_dim", 5),
+            img_hidden_dim=getattr(args, "img_hidden_dim", 512),
+            img_out_dim=getattr(args, "img_out_dim", 256),
+            tab_hidden_dim=getattr(args, "tab_hidden_dim", 32),
+            tab_out_dim=getattr(args, "tab_out_dim", 64),
+            fusion_hidden_dim=getattr(args, "fusion_hidden_dim", 192),
+            task_hidden_dim=getattr(args, "task_hidden_dim", 128),
+            dropout_img=getattr(args, "dropout_img", 0.2),
+            dropout_tab=getattr(args, "dropout_tab", 0.1),
+            dropout_fusion=getattr(args, "dropout_fusion", 0.2),
+            grade_tab_scale=getattr(args, "grade_tab_scale", 0.3),
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+        )
     if args.pretrained_weights is None or args.pretrained_weights =='':
         print('Loading pretrained {} weights for {} from timm.'.format(args.init, args.model_name))
         if args.model_name.lower() == "vit_base":
@@ -397,6 +414,71 @@ class MultiHeadOrdinalModel(nn.Module):
             "shared_features": z_shared,
             "lpv3_enable_neck": self.lpv3_enable_neck,
         }
+
+
+class EmbeddingTabularOrdinalModel(nn.Module):
+    def __init__(
+        self,
+        img_emb_dim=1376,
+        tab_dim=5,
+        img_hidden_dim=512,
+        img_out_dim=256,
+        tab_hidden_dim=32,
+        tab_out_dim=64,
+        fusion_hidden_dim=192,
+        task_hidden_dim=128,
+        dropout_img=0.2,
+        dropout_tab=0.1,
+        dropout_fusion=0.2,
+        grade_tab_scale=0.3,
+        num_class_grade=3,
+        num_class_stage=2,
+    ):
+        super().__init__()
+        self.grade_tab_scale = float(grade_tab_scale)
+        self.img_tower = nn.Sequential(
+            nn.LayerNorm(int(img_emb_dim)),
+            nn.Linear(int(img_emb_dim), int(img_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_img)),
+            nn.Linear(int(img_hidden_dim), int(img_out_dim)),
+            nn.GELU(),
+        )
+        self.tab_tower = nn.Sequential(
+            nn.Linear(int(tab_dim), int(tab_hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(float(dropout_tab)),
+            nn.Linear(int(tab_hidden_dim), int(tab_out_dim)),
+            nn.ReLU(),
+        )
+        in_dim = int(img_out_dim) + int(tab_out_dim)
+        self.grade_fusion = nn.Sequential(
+            nn.Linear(in_dim, int(fusion_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_fusion)),
+            nn.Linear(int(fusion_hidden_dim), int(task_hidden_dim)),
+            nn.GELU(),
+        )
+        self.stage_fusion = nn.Sequential(
+            nn.Linear(in_dim, int(fusion_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_fusion)),
+            nn.Linear(int(fusion_hidden_dim), int(task_hidden_dim)),
+            nn.GELU(),
+        )
+        self.head_grade = nn.Linear(int(task_hidden_dim), int(num_class_grade))
+        self.head_stage = nn.Linear(int(task_hidden_dim), int(num_class_stage))
+
+    def forward(self, x):
+        if not isinstance(x, dict):
+            raise ValueError("EmbeddingTabularOrdinalModel 需要 dict 输入: {'img_emb', 'tab'}")
+        img_emb = x["img_emb"]
+        tab = x["tab"]
+        z_img = self.img_tower(img_emb)
+        z_tab = self.tab_tower(tab)
+        h_g = self.grade_fusion(torch.cat([z_img, self.grade_tab_scale * z_tab], dim=1))
+        h_s = self.stage_fusion(torch.cat([z_img, z_tab], dim=1))
+        return self.head_grade(h_g), self.head_stage(h_s)
 
 
 
