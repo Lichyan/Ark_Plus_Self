@@ -3,6 +3,7 @@ import torch
 import random
 import copy
 import csv
+import hashlib
 from PIL import Image, ImageFile
 import json
 import SimpleITK as sitk
@@ -1130,6 +1131,147 @@ class advCheX_hyp_multi_grade_stage_v1(Dataset):
             },
         }
         return img, target
+
+    def __len__(self):
+        return len(self.img_list)
+
+
+class advCheX_hyp_grade_stage_embtab_base(Dataset):
+    """Embedding + tabular baseline dataset for grade/stage ordinal multi-task."""
+
+    TAB_COLS = ["age_abs", "age_topcoded", "sex_bin", "bmi_stat", "bmi_missing"]
+
+    def __init__(self, images_path, file_path, split="train", tab_norm_stats=None, few_shot=-1):
+        self.images_path = images_path
+        self.file_path = file_path
+        self.split = str(split).lower()
+        self.img_list = []
+        self.grade_labels = []
+        self.stage_labels = []
+        self.grade_list = []
+        self.stage_list = []
+        self.tab_list = []
+        self.joint_ids = []
+        self.tab_norm_stats = dict(tab_norm_stats) if tab_norm_stats is not None else None
+
+        with open(file_path, "r") as f:
+            csv_reader = csv.DictReader(f)
+            missing_cols = [c for c in (["Path", "grade", "stage"] + self.TAB_COLS) if c not in csv_reader.fieldnames]
+            if missing_cols:
+                raise ValueError(f"CSV缺少必要列: {missing_cols}, got={csv_reader.fieldnames}")
+            for row in csv_reader:
+                rel_path = row["Path"].strip()
+                emb_path = rel_path if os.path.isabs(rel_path) else os.path.join(images_path, rel_path)
+                grade = int(row["grade"])
+                stage = int(row["stage"])
+                if grade < 0 or grade > 3 or stage < 0 or stage > 2:
+                    continue
+                if (grade, stage) not in JOINT_LABEL_TO_INDEX:
+                    continue
+
+                age_abs = float(row["age_abs"])
+                age_topcoded = float(row["age_topcoded"])
+                sex_bin = float(row["sex_bin"])
+                bmi_stat = float(row["bmi_stat"])
+                bmi_missing = float(row["bmi_missing"])
+                self.img_list.append(emb_path)
+                self.grade_labels.append([1 if grade >= k else 0 for k in [1, 2, 3]])
+                self.stage_labels.append([1 if stage >= k else 0 for k in [1, 2]])
+                self.grade_list.append(grade)
+                self.stage_list.append(stage)
+                self.joint_ids.append(JOINT_LABEL_TO_INDEX[(grade, stage)])
+                self.tab_list.append([age_abs, age_topcoded, sex_bin, bmi_stat, bmi_missing])
+
+        if self.split == "train" and self.tab_norm_stats is None:
+            self.tab_norm_stats = self._compute_tab_norm_stats()
+            self._save_tab_norm_stats()
+        if self.tab_norm_stats is None:
+            self.tab_norm_stats = self._load_tab_norm_stats()
+        if self.tab_norm_stats is None:
+            raise ValueError("tab_norm_stats 不可用；请先构建 train split 或传入统计量。")
+
+        self.tab_list = [self._normalize_tab(x) for x in self.tab_list]
+
+        if few_shot > 0:
+            indexes = np.arange(len(self.img_list))
+            random.Random(99).shuffle(indexes)
+            num_data = int(len(indexes) * few_shot) if few_shot < 1 else int(few_shot)
+            indexes = indexes[:num_data]
+            self.img_list = [self.img_list[i] for i in indexes]
+            self.grade_labels = [self.grade_labels[i] for i in indexes]
+            self.stage_labels = [self.stage_labels[i] for i in indexes]
+            self.grade_list = [self.grade_list[i] for i in indexes]
+            self.stage_list = [self.stage_list[i] for i in indexes]
+            self.joint_ids = [self.joint_ids[i] for i in indexes]
+            self.tab_list = [self.tab_list[i] for i in indexes]
+
+        print(
+            f"[advCheX_hyp_grade_stage_embtab_base][{self.split}] N={len(self.img_list)} tab_norm={self.tab_norm_stats}",
+            flush=True,
+        )
+
+    def _norm_cache_path(self):
+        train_tag = hashlib.md5(os.path.abspath(self.file_path).encode("utf-8")).hexdigest()[:8]
+        return os.path.join(self.images_path, f"embtab_norm_stats_{train_tag}.json")
+
+    def _compute_tab_norm_stats(self):
+        tab = np.asarray(self.tab_list, dtype=np.float32)
+        age = tab[:, 0]
+        bmi = tab[:, 3]
+        age_mean = float(np.mean(age))
+        age_std = float(np.std(age))
+        bmi_mean = float(np.mean(bmi))
+        bmi_std = float(np.std(bmi))
+        return {
+            "age_mean": age_mean,
+            "age_std": age_std if age_std > 1e-8 else 1.0,
+            "bmi_mean": bmi_mean,
+            "bmi_std": bmi_std if bmi_std > 1e-8 else 1.0,
+        }
+
+    def _save_tab_norm_stats(self):
+        save_path = self._norm_cache_path()
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(self.tab_norm_stats, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[advCheX_hyp_grade_stage_embtab_base] save norm stats failed: {e}", flush=True)
+
+    def _load_tab_norm_stats(self):
+        load_path = self._norm_cache_path()
+        if not os.path.exists(load_path):
+            return None
+        with open(load_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _normalize_tab(self, x):
+        age_abs, age_topcoded, sex_bin, bmi_stat, bmi_missing = x
+        age_z = (float(age_abs) - float(self.tab_norm_stats["age_mean"])) / float(self.tab_norm_stats["age_std"])
+        bmi_z = (float(bmi_stat) - float(self.tab_norm_stats["bmi_mean"])) / float(self.tab_norm_stats["bmi_std"])
+        return [age_z, float(age_topcoded), float(sex_bin), bmi_z, float(bmi_missing)]
+
+    def __getitem__(self, index):
+        emb_path = self.img_list[index]
+        img_emb = np.load(emb_path)
+        img_emb = np.asarray(img_emb, dtype=np.float32).reshape(-1)
+        tab = np.asarray(self.tab_list[index], dtype=np.float32)
+        grade = int(self.grade_list[index])
+        stage = int(self.stage_list[index])
+        target = {
+            "y_grade": torch.FloatTensor(self.grade_labels[index]),
+            "y_stage": torch.FloatTensor(self.stage_labels[index]),
+            "raw_grade": torch.tensor(grade, dtype=torch.long),
+            "raw_stage": torch.tensor(stage, dtype=torch.long),
+            "joint_id": torch.tensor(int(self.joint_ids[index]), dtype=torch.long),
+            "meta": {"grade": grade, "stage": stage, "path": emb_path},
+        }
+        sample = {
+            "img_emb": torch.from_numpy(img_emb),
+            "tab": torch.from_numpy(tab),
+        }
+        if getattr(self, "return_path", False):
+            return sample, target, emb_path
+        return sample, target
 
     def __len__(self):
         return len(self.img_list)
