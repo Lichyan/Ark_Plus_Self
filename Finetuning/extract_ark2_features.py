@@ -20,8 +20,11 @@ from torchvision import transforms
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PRETRAINING_DIR = REPO_ROOT / "Pretraining"
+if str(PRETRAINING_DIR) not in sys.path:
+    sys.path.insert(0, str(PRETRAINING_DIR))
 if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+    sys.path.insert(1, str(REPO_ROOT))
 
 from Pretraining.models import build_omni_model_from_checkpoint  # noqa: E402
 
@@ -159,6 +162,84 @@ def discover_samples(
     return samples
 
 
+def discover_samples_from_csv(
+    csv_path: Path,
+    images_root: Path,
+    path_column: str,
+    max_images: Optional[int],
+    error_rows: List[dict],
+) -> List[ImageSample]:
+    samples: List[ImageSample] = []
+    if not csv_path.is_file():
+        error_rows.append(
+            {
+                "path": str(csv_path),
+                "error_type": "csv_missing",
+                "error_message": "csv file does not exist",
+            }
+        )
+        return samples
+
+    with csv_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            error_rows.append(
+                {
+                    "path": str(csv_path),
+                    "error_type": "csv_empty",
+                    "error_message": "csv header is missing",
+                }
+            )
+            return samples
+        if path_column not in reader.fieldnames:
+            error_rows.append(
+                {
+                    "path": str(csv_path),
+                    "error_type": "csv_column_missing",
+                    "error_message": f"missing required column: {path_column}",
+                }
+            )
+            return samples
+
+        for row in reader:
+            rel_raw = str(row.get(path_column, "")).strip()
+            if not rel_raw:
+                continue
+
+            rel_path = Path(rel_raw)
+            img_abs = (images_root / rel_path).resolve()
+            if not img_abs.is_file():
+                error_rows.append(
+                    {
+                        "path": str(img_abs),
+                        "error_type": "image_path_missing",
+                        "error_message": f"path from csv not found: {rel_raw}",
+                    }
+                )
+                continue
+
+            parts = list(rel_path.parts)
+            subject_id = ""
+            study_id = ""
+            if len(parts) >= 3 and parts[-3].startswith("patient"):
+                subject_id = parts[-3].replace("patient", "")
+            if len(parts) >= 2 and parts[-2].startswith("study"):
+                study_id = parts[-2].replace("study", "")
+
+            samples.append(
+                ImageSample(
+                    image_path=img_abs,
+                    relative_path=rel_path,
+                    subject_id=subject_id,
+                    study_id=study_id,
+                    image_filename=img_abs.name,
+                )
+            )
+            if max_images is not None and len(samples) >= max_images:
+                break
+    return samples
+
+
 def collate_keep(items: Sequence[dict]):
     oks = [x for x in items if x["ok"]]
     fails = [x for x in items if not x["ok"]]
@@ -206,7 +287,11 @@ def write_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[dict]) -> No
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract Ark+ encoder/projector features from MIMIC-CXR JPG")
+    parser.add_argument("--input_mode", choices=["auto", "mimic_tree", "csv"], default="auto")
     parser.add_argument("--mimic_root", type=Path, default=DEFAULT_MIMIC_ROOT)
+    parser.add_argument("--images_root", type=Path, default=None, help="image root used by csv mode")
+    parser.add_argument("--csv_path", type=Path, default=None, help="csv path used by csv mode")
+    parser.add_argument("--csv_path_col", default="Path", help="column name containing relative image paths")
     parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--checkpoint_key", default="teacher")
@@ -229,6 +314,8 @@ def parse_args() -> argparse.Namespace:
 
     args.weights = args.weights.expanduser().resolve()
     args.mimic_root = args.mimic_root.expanduser().resolve()
+    args.images_root = (args.images_root if args.images_root is not None else args.mimic_root).expanduser().resolve()
+    args.csv_path = args.csv_path.expanduser().resolve() if args.csv_path is not None else None
     args.output_root = args.output_root.expanduser().resolve()
     args.device = torch.device(args.device)
     args.num_classes_list = parse_num_classes_list(args.num_classes_list)
@@ -250,13 +337,23 @@ def main() -> None:
 
     error_rows: List[dict] = []
 
-    samples = discover_samples(
-        mimic_root=args.mimic_root,
-        start_prefix=args.start_prefix,
-        end_prefix=args.end_prefix,
-        max_images=args.max_images,
-        error_rows=error_rows,
-    )
+    use_csv_mode = args.input_mode == "csv" or (args.input_mode == "auto" and args.csv_path is not None)
+    if use_csv_mode:
+        samples = discover_samples_from_csv(
+            csv_path=args.csv_path if args.csv_path is not None else args.images_root / "test.csv",
+            images_root=args.images_root,
+            path_column=args.csv_path_col,
+            max_images=args.max_images,
+            error_rows=error_rows,
+        )
+    else:
+        samples = discover_samples(
+            mimic_root=args.mimic_root,
+            start_prefix=args.start_prefix,
+            end_prefix=args.end_prefix,
+            max_images=args.max_images,
+            error_rows=error_rows,
+        )
     print(f"[INFO] discovered {len(samples)} images")
     if not samples:
         write_csv(error_csv_path, ["path", "error_type", "error_message"], error_rows)
