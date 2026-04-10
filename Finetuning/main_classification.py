@@ -738,6 +738,7 @@ def main(args):
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         diseases = ["grade", "stage"]
+        val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
         need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
         if args.mode == "train":
             dataset_train = advCheX_hyp_grade_stage_embtab_base(
@@ -748,7 +749,7 @@ def main(args):
                 few_shot=args.few_shot,
             )
             dataset_val = advCheX_hyp_grade_stage_embtab_base(
-                images_path=args.data_dir,
+                images_path=val_images_root,
                 file_path=args.val_list,
                 split="valid",
                 tab_norm_stats=dataset_train.tab_norm_stats,
@@ -763,7 +764,7 @@ def main(args):
                     tab_norm_stats=None,
                 )
                 dataset_val = advCheX_hyp_grade_stage_embtab_base(
-                    images_path=args.data_dir,
+                    images_path=val_images_root,
                     file_path=args.val_list,
                     split="valid",
                     tab_norm_stats=dataset_val_train.tab_norm_stats,
