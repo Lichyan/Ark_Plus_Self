@@ -93,3 +93,7 @@ Changes: classification_engine 的多头测试分支为 v2 传递完整真实运
 [2026-03-20] -codex
 Reason: 修复 advCheX_hyp_grade_stage_v2 测试评估 wrapper 将 v2-only 参数错误透传给 evaluate_grade_stage_sep 导致 TypeError 的问题，并补充 decoder objective 兼容别名。
 Changes: evaluate_grade_stage_v2 现在只向 evaluate_grade_stage_sep 传递其签名支持的参数，v2-only 配置保留在 wrapper 内部用于 fused/joint 评估，避免影响 v1/sep_v1 的既有执行逻辑；新增 decoder objective 名称规范化 helper，将常见拼写 marco_f1 兼容映射到 macro_f1，以减少 temp_ev/threshold 搜索时的参数兼容坑点。
+
+[2026-04-03] -codex
+Reason: 新增离线 Ark+ embedding + tabular(EHR) 轻量多任务基线，要求复用现有训练/评估生态且不影响 v1/sep_v1/v2 等既有模式。
+Changes: 新增 `advCheX_hyp_grade_stage_embtab_base` 数据集分支（直接读取 Path 指向的 `.npy` embedding；tab 输入固定 5 维并按 train-only 统计做 age/bmi 标准化，valid/test 复用 train 统计）；新增 `EmbeddingTabularOrdinalModel`（image tower + tab tower + grade/stage 非对称融合 + ordinal 双头输出）；主流程新增 embtab 参数与数据集构建逻辑（train/valid/test）；多头损失在 embtab 模式下保持 grade/stage ordinal 主损失并开启 grade soft、关闭 stage soft；测试评估复用 sep 风格 decoder/raw 路径并继续输出 Confmat_grade/Confmat_stage/Confmat_grade_stage、invalid 统计；metrics/result 增补 embtab-base 结构与损失摘要（含 `embtab_stage_soft_label=false`）；新增对 dict/embedding 输入的训练与测试批处理兼容。
