@@ -810,6 +810,47 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
     )
 
 
+def _collect_outputs_multi_v2lite(model, data_loader, device, joint_beta_stage=0.5, joint_gamma_cond=0.5):
+    model.eval()
+    y_grade_all, y_stage_all = [], []
+    p_grade_ge_all, p_stage_ge_all = [], []
+    p_joint6_all, pG_fused_all, pS_fused_all = [], [], []
+    with torch.no_grad():
+        for batch in tqdm(data_loader):
+            if batch is None:
+                continue
+            samples, targets = batch
+            if isinstance(samples, dict):
+                samples = {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in samples.items()}
+            else:
+                samples = samples.float().to(device)
+            out = model(samples)
+            if not (isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"])):
+                raise TypeError("v2lite 验证期期望 dict 输出且包含 grade/stage/q1/q2")
+            p_grade_ge = corn_marginal_ge_probs(torch.sigmoid(out["grade_logits"]))
+            p_stage_ge = corn_marginal_ge_probs(torch.sigmoid(out["stage_ind_logits"]))
+            joint = compose_v2_joint_predictions(
+                p_grade_ge, p_stage_ge, out["q1_logit"], out["q2_logit"],
+                joint_beta_stage=float(joint_beta_stage), joint_gamma_cond=float(joint_gamma_cond), use_entropy_alpha=False,
+            )
+            y_grade_all.append(targets["y_grade"].cpu())
+            y_stage_all.append(targets["y_stage"].cpu())
+            p_grade_ge_all.append(p_grade_ge.cpu())
+            p_stage_ge_all.append(p_stage_ge.cpu())
+            p_joint6_all.append(joint["P_joint6"].cpu())
+            pG_fused_all.append(joint["pG_fused4"].cpu())
+            pS_fused_all.append(joint["pS_fused3"].cpu())
+    return {
+        "y_grade": torch.cat(y_grade_all, dim=0).numpy(),
+        "y_stage": torch.cat(y_stage_all, dim=0).numpy(),
+        "p_grade_ge": torch.cat(p_grade_ge_all, dim=0).numpy(),
+        "p_stage_ge": torch.cat(p_stage_ge_all, dim=0).numpy(),
+        "p_joint6": torch.cat(p_joint6_all, dim=0).numpy(),
+        "pG_fused": torch.cat(pG_fused_all, dim=0).numpy(),
+        "pS_fused": torch.cat(pS_fused_all, dim=0).numpy(),
+    }
+
+
 def _load_ordinal_thresholds(saved_model, args):
     if args.thresholds_json and os.path.exists(args.thresholds_json):
         return load_thresholds_json(args.thresholds_json)
@@ -1258,6 +1299,33 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               ),
               flush=True,
             )
+          elif args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+            print(
+              "[MultiHead][Loss][v2lite] train: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} "
+              "C_11v12={:.4f} C_21v22={:.4f} J_legal={:.4f} gate_g={:.4f} gate_s={:.4f} total={:.4f} | "
+              "val: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} C_11v12={:.4f} C_21v22={:.4f} J_legal={:.4f} "
+              "gate_g={:.4f} gate_s={:.4f} total={:.4f}".format(
+                train_components.get("loss_grade_main", 0.0),
+                train_components.get("loss_grade_soft", 0.0),
+                train_components.get("loss_stage_marg_ind", 0.0),
+                train_components.get("loss_cond_11_12", 0.0),
+                train_components.get("loss_cond_21_22", 0.0),
+                train_components.get("loss_soft_joint", 0.0),
+                train_components.get("mean_gate_g", 0.0),
+                train_components.get("mean_gate_s", 0.0),
+                train_components.get("loss_total", train_loss),
+                val_components.get("loss_grade_main", 0.0),
+                val_components.get("loss_grade_soft", 0.0),
+                val_components.get("loss_stage_marg_ind", 0.0),
+                val_components.get("loss_cond_11_12", 0.0),
+                val_components.get("loss_cond_21_22", 0.0),
+                val_components.get("loss_soft_joint", 0.0),
+                val_components.get("mean_gate_g", 0.0),
+                val_components.get("mean_gate_s", 0.0),
+                val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
           elif args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
             print(
               "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} "
@@ -1314,36 +1382,58 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           else:
             print(f"Epoch {epoch:04d}: val_auc_hypertension=N/A (single class)", flush=True)
         if args.data_set in multihead_datasets:
-          y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
-            model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
-          )
-          prior = build_joint_prior_mimic(
-            np.array([ordinal_targets_to_grade(row) for row in y_grade_val]),
-            np.array([ordinal_targets_to_grade(row) for row in y_stage_val]),
-            eps=getattr(args, "joint_prior_eps", 1e-3),
-          )
-          val_metrics, _, _, _ = evaluate_grade_stage_joint(
-            y_grade_val,
-            y_stage_val,
-            p_grade_val,
-            p_stage_val,
-            prior=prior,
-            prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
-            softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
-            ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
-          )
-          val_joint = val_metrics.get("joint_exact_acc_pjoint")
+          if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+            val_pack = _collect_outputs_multi_v2lite(
+              model, data_loader_val, device,
+              joint_beta_stage=getattr(args, "joint_beta_stage", 0.5),
+              joint_gamma_cond=getattr(args, "joint_gamma_cond", 0.5),
+            )
+            y_grade_val = val_pack["y_grade"]
+            y_stage_val = val_pack["y_stage"]
+            p_grade_val = val_pack["p_grade_ge"]
+            p_stage_val = val_pack["p_stage_ge"]
+            pG_val = val_pack["pG_fused"]
+            pS_val = val_pack["pS_fused"]
+            grade_pred = np.argmax(pG_val, axis=1)
+            stage_pred = np.argmax(pS_val, axis=1)
+            joint_probs = val_pack["p_joint6"]
+            joint_pred = np.argmax(joint_probs, axis=1)
+            joint_true = np.array([
+              JOINT_LABEL_TO_INDEX[(ordinal_targets_to_grade(g), ordinal_targets_to_grade(s))]
+              for g, s in zip(y_grade_val, y_stage_val)
+            ], dtype=np.int64)
+            val_joint = float(np.mean(joint_pred == joint_true)) if joint_true.size > 0 else np.nan
+          else:
+            y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
+              model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
+            )
+            prior = build_joint_prior_mimic(
+              np.array([ordinal_targets_to_grade(row) for row in y_grade_val]),
+              np.array([ordinal_targets_to_grade(row) for row in y_stage_val]),
+              eps=getattr(args, "joint_prior_eps", 1e-3),
+            )
+            val_metrics, _, _, _ = evaluate_grade_stage_joint(
+              y_grade_val,
+              y_stage_val,
+              p_grade_val,
+              p_stage_val,
+              prior=prior,
+              prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
+              softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
+              ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
+            )
+            val_joint = val_metrics.get("joint_exact_acc_pjoint")
+            pG_val = ordinal_probs_to_class_probs(p_grade_val)
+            pS_val = ordinal_probs_to_class_probs(p_stage_val)
+            grade_pred = np.argmax(pG_val, axis=1)
+            stage_pred = np.argmax(pS_val, axis=1)
+            joint_probs = compute_joint_distribution(
+              pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
+            )
+            joint_pred = np.argmax(joint_probs, axis=1)
           if val_joint is not None:
             print(f"Epoch {epoch:04d}: val_joint_exact_acc_pjoint={val_joint:.4f}", flush=True)
           print(f"[MultiHead][Mode] ordinal_mode={getattr(args, 'ordinal_mode', 'default')}", flush=True)
-          pG_val = ordinal_probs_to_class_probs(p_grade_val)
-          pS_val = ordinal_probs_to_class_probs(p_stage_val)
-          grade_pred = np.argmax(pG_val, axis=1)
-          stage_pred = np.argmax(pS_val, axis=1)
-          joint_probs = compute_joint_distribution(
-            pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
-          )
-          joint_pred = np.argmax(joint_probs, axis=1)
           grade_counts = np.bincount(grade_pred, minlength=4)
           stage_counts = np.bincount(stage_pred, minlength=3)
           joint_counts = np.bincount(joint_pred, minlength=len(JOINT_LABELS))
