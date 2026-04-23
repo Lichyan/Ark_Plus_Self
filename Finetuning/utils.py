@@ -1759,12 +1759,15 @@ def build_v2_joint_graph_distance_matrix_numpy(joint_graph_w_00_11=1.0, joint_gr
 
 
 def compose_v2_joint_predictions(p_ge_grade, p_ge_stage, q1_logit, q2_logit, alpha_gate_min=0.15, alpha_gate_max=0.65,
-                                 joint_beta_stage=0.5, joint_gamma_cond=0.5, eps=1e-8):
+                                 joint_beta_stage=0.5, joint_gamma_cond=0.5, eps=1e-8, use_entropy_alpha=True):
     pG = corn_probs_to_class_probs_torch(p_ge_grade)
     pS = corn_probs_to_class_probs_torch(p_ge_stage)
     if isinstance(pG, torch.Tensor):
-        H = -(pG.clamp_min(eps) * torch.log(pG.clamp_min(eps))).sum(dim=1) / np.log(4.0)
-        alpha = alpha_gate_min + (alpha_gate_max - alpha_gate_min) * H
+        if use_entropy_alpha:
+            H = -(pG.clamp_min(eps) * torch.log(pG.clamp_min(eps))).sum(dim=1) / np.log(4.0)
+            alpha = alpha_gate_min + (alpha_gate_max - alpha_gate_min) * H
+        else:
+            alpha = torch.ones((pG.shape[0],), dtype=pG.dtype, device=pG.device)
         q1 = torch.sigmoid(q1_logit.view(-1))
         q2 = torch.sigmoid(q2_logit.view(-1))
         pg = pG.clamp(eps, 1.0); ps = pS.clamp(eps, 1.0); q1c = q1.clamp(eps, 1.0 - eps); q2c = q2.clamp(eps, 1.0 - eps)

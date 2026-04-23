@@ -30,7 +30,7 @@ def get_args_parser():
                       default=14, type="int")
     parser.add_option("--num_class_grade", dest="num_class_grade", help="number of grade ordinal logits", default=3, type="int")
     parser.add_option("--num_class_stage", dest="num_class_stage", help="number of stage ordinal logits", default=2, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1|advCheX_hyp_grade_stage_v2|advCheX_hyp_grade_stage_embtab_base", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1|advCheX_hyp_grade_stage_v2|advCheX_hyp_grade_stage_embtab_base|advCheX_hyp_grade_stage_embtab_v2lite", default="ChestXray14", type="string")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -217,16 +217,25 @@ def get_args_parser():
     parser.add_option("--lambda_stage_marg", dest="lambda_stage_marg", default=0.8, type="float")
     parser.add_option("--lambda_cond_stage", dest="lambda_cond_stage", default=0.6, type="float")
     parser.add_option("--lambda_soft_joint", dest="lambda_soft_joint", default=0.15, type="float")
+    parser.add_option("--lambda_cond", dest="lambda_cond", default=0.5, type="float")
+    parser.add_option("--lambda_joint_soft", dest="lambda_joint_soft", default=0.05, type="float")
     parser.add_option("--stage_fused_aux_weight", dest="stage_fused_aux_weight", default=0.3, type="float")
     parser.add_option("--cond_pos_weight_g1", dest="cond_pos_weight_g1", default=3.0, type="float")
     parser.add_option("--cond_pos_weight_g2", dest="cond_pos_weight_g2", default=5.0, type="float")
     parser.add_option("--joint_graph_tau", dest="joint_graph_tau", default=0.7, type="float")
     parser.add_option("--joint_beta_stage", dest="joint_beta_stage", default=0.5, type="float")
     parser.add_option("--joint_gamma_cond", dest="joint_gamma_cond", default=0.5, type="float")
-    parser.add_option("--v2_soft_joint_start_epoch", dest="v2_soft_joint_start_epoch", default=5, type="int")
-    parser.add_option("--v2_soft_joint_warmup_epochs", dest="v2_soft_joint_warmup_epochs", default=5, type="int")
     parser.add_option("--use_stopgrad_grade_for_cond", dest="use_stopgrad_grade_for_cond", default=True,
                       action="callback", callback=vararg_callback_bool)
+    parser.add_option("--use_residual_gated_fusion", dest="use_residual_gated_fusion", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--gate_hidden_dim", dest="gate_hidden_dim", default=128, type="int")
+    parser.add_option("--use_v2lite_fused_eval", dest="use_v2lite_fused_eval", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--use_legal_joint_composer", dest="use_legal_joint_composer", default=True,
+                      action="callback", callback=vararg_callback_bool)
+    parser.add_option("--v2_soft_joint_start_epoch", dest="v2_soft_joint_start_epoch", default=5, type="int")
+    parser.add_option("--v2_soft_joint_warmup_epochs", dest="v2_soft_joint_warmup_epochs", default=5, type="int")
     parser.add_option("--teacher_force_grade_epochs", dest="teacher_force_grade_epochs", default=0, type="int")
     parser.add_option("--alpha_gate_min", dest="alpha_gate_min", default=0.15, type="float")
     parser.add_option("--alpha_gate_max", dest="alpha_gate_max", default=0.65, type="float")
@@ -788,6 +797,44 @@ def main(args):
             file_path=args.test_list,
             split="test",
             tab_norm_stats=tab_stats_for_test,
+        )
+        classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test)
+
+    elif args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+        args.num_class_grade = 3
+        args.num_class_stage = 2
+        args.num_class = args.num_class_grade
+        diseases = ["grade", "stage"]
+        val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
+        need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
+        if args.mode == "train":
+            dataset_train = advCheX_hyp_grade_stage_embtab_v2lite(
+                images_path=args.data_dir, file_path=args.train_list, split="train", tab_norm_stats=None, few_shot=args.few_shot
+            )
+            dataset_val = advCheX_hyp_grade_stage_embtab_v2lite(
+                images_path=val_images_root, file_path=args.val_list, split="valid", tab_norm_stats=dataset_train.tab_norm_stats
+            )
+        else:
+            dataset_train = None
+            if need_decoder_val and args.val_list:
+                dataset_val_train = advCheX_hyp_grade_stage_embtab_v2lite(
+                    images_path=args.data_dir, file_path=args.train_list, split="train", tab_norm_stats=None
+                )
+                dataset_val = advCheX_hyp_grade_stage_embtab_v2lite(
+                    images_path=val_images_root, file_path=args.val_list, split="valid", tab_norm_stats=dataset_val_train.tab_norm_stats
+                )
+            else:
+                dataset_val = None
+        tab_stats_for_test = None
+        if args.mode == "train" and dataset_train is not None:
+            tab_stats_for_test = dataset_train.tab_norm_stats
+        elif args.train_list:
+            dataset_train_for_stats = advCheX_hyp_grade_stage_embtab_v2lite(
+                images_path=args.data_dir, file_path=args.train_list, split="train", tab_norm_stats=None
+            )
+            tab_stats_for_test = dataset_train_for_stats.tab_norm_stats
+        dataset_test = advCheX_hyp_grade_stage_embtab_v2lite(
+            images_path=args.data_dir, file_path=args.test_list, split="test", tab_norm_stats=tab_stats_for_test
         )
         classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test)
 
