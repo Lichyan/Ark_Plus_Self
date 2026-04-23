@@ -194,6 +194,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
   pG_fused_test = torch.FloatTensor().cuda()
   pS_fused_test = torch.FloatTensor().cuda()
   alpha_gate_test = torch.FloatTensor().cuda()
+  gate_g_test = torch.FloatTensor().cuda()
+  gate_s_test = torch.FloatTensor().cuda()
   path_list = []
   printed = False
 
@@ -276,6 +278,7 @@ def test_classification(checkpoint, data_loader_test, device, args):
           alpha_gate_max=getattr(args, "alpha_gate_max", 0.65),
           joint_beta_stage=getattr(args, "joint_beta_stage", 0.5),
           joint_gamma_cond=getattr(args, "joint_gamma_cond", 0.5),
+          use_entropy_alpha=(getattr(args, "data_set", "") != "advCheX_hyp_grade_stage_embtab_v2lite"),
         )
         out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
         out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
@@ -287,6 +290,10 @@ def test_classification(checkpoint, data_loader_test, device, args):
         pG_fused_test = torch.cat((pG_fused_test, joint["pG_fused4"].view(bs, n_crops, -1).mean(1).data), 0)
         pS_fused_test = torch.cat((pS_fused_test, joint["pS_fused3"].view(bs, n_crops, -1).mean(1).data), 0)
         alpha_gate_test = torch.cat((alpha_gate_test, joint["alpha"].view(bs, n_crops, -1).mean(1).data), 0)
+        if "gate_g" in out:
+          gate_g_test = torch.cat((gate_g_test, out["gate_g"].view(bs, n_crops, -1).mean(1).data), 0)
+        if "gate_s" in out:
+          gate_s_test = torch.cat((gate_s_test, out["gate_s"].view(bs, n_crops, -1).mean(1).data), 0)
       elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
@@ -325,6 +332,10 @@ def test_classification(checkpoint, data_loader_test, device, args):
         "pS_fused": pS_fused_test,
         "alpha_gate": alpha_gate_test,
       })
+      if gate_g_test.numel() > 0:
+        p_dict["gate_g"] = gate_g_test
+      if gate_s_test.numel() > 0:
+        p_dict["gate_s"] = gate_s_test
     if path_list:
       return y_dict, p_dict, path_list
     return y_dict, p_dict

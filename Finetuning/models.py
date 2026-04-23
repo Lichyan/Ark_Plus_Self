@@ -39,6 +39,25 @@ if add_safe_globals is not None:
 def build_classification_model(args):
     model = None
     print("Creating model...")
+    if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_embtab_v2lite":
+        return EmbeddingTabularV2LiteModel(
+            img_emb_dim=getattr(args, "img_emb_dim", 1376),
+            tab_dim=getattr(args, "tab_dim", 5),
+            img_hidden_dim=getattr(args, "img_hidden_dim", 512),
+            img_out_dim=getattr(args, "img_out_dim", 256),
+            tab_hidden_dim=getattr(args, "tab_hidden_dim", 32),
+            tab_out_dim=getattr(args, "tab_out_dim", 64),
+            fusion_hidden_dim=getattr(args, "fusion_hidden_dim", 192),
+            task_hidden_dim=getattr(args, "task_hidden_dim", 128),
+            gate_hidden_dim=getattr(args, "gate_hidden_dim", 128),
+            dropout_img=getattr(args, "dropout_img", 0.2),
+            dropout_tab=getattr(args, "dropout_tab", 0.1),
+            dropout_fusion=getattr(args, "dropout_fusion", 0.2),
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+            use_stopgrad_grade_for_cond=getattr(args, "use_stopgrad_grade_for_cond", True),
+            use_residual_gated_fusion=getattr(args, "use_residual_gated_fusion", True),
+        )
     if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_embtab_base":
         return EmbeddingTabularOrdinalModel(
             img_emb_dim=getattr(args, "img_emb_dim", 1376),
@@ -479,6 +498,128 @@ class EmbeddingTabularOrdinalModel(nn.Module):
         h_g = self.grade_fusion(torch.cat([z_img, self.grade_tab_scale * z_tab], dim=1))
         h_s = self.stage_fusion(torch.cat([z_img, z_tab], dim=1))
         return self.head_grade(h_g), self.head_stage(h_s)
+
+
+class EmbeddingTabularV2LiteModel(nn.Module):
+    def __init__(
+        self,
+        img_emb_dim=1376,
+        tab_dim=5,
+        img_hidden_dim=512,
+        img_out_dim=256,
+        tab_hidden_dim=32,
+        tab_out_dim=64,
+        fusion_hidden_dim=192,
+        task_hidden_dim=128,
+        gate_hidden_dim=128,
+        dropout_img=0.2,
+        dropout_tab=0.1,
+        dropout_fusion=0.2,
+        num_class_grade=3,
+        num_class_stage=2,
+        use_stopgrad_grade_for_cond=True,
+        use_residual_gated_fusion=True,
+    ):
+        super().__init__()
+        self.use_stopgrad_grade_for_cond = bool(use_stopgrad_grade_for_cond)
+        self.use_residual_gated_fusion = bool(use_residual_gated_fusion)
+        self.img_tower = nn.Sequential(
+            nn.LayerNorm(int(img_emb_dim)),
+            nn.Linear(int(img_emb_dim), int(img_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_img)),
+            nn.Linear(int(img_hidden_dim), int(img_out_dim)),
+            nn.GELU(),
+        )
+        self.tab_tower = nn.Sequential(
+            nn.Linear(int(tab_dim), int(tab_hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(float(dropout_tab)),
+            nn.Linear(int(tab_hidden_dim), int(tab_out_dim)),
+            nn.ReLU(),
+        )
+        in_dim = int(img_out_dim) + int(tab_out_dim)
+        gate_in_dim = int(task_hidden_dim) + int(tab_out_dim) + 2
+        cond_dim = int(task_hidden_dim) + int(tab_out_dim) + 4
+        self.grade_img_block = nn.Sequential(
+            nn.Linear(int(img_out_dim), int(fusion_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_fusion)),
+            nn.Linear(int(fusion_hidden_dim), int(task_hidden_dim)),
+            nn.GELU(),
+        )
+        self.grade_corr_block = nn.Sequential(
+            nn.Linear(in_dim, int(task_hidden_dim)),
+            nn.GELU(),
+            nn.Linear(int(task_hidden_dim), int(task_hidden_dim)),
+        )
+        self.grade_gate = nn.Sequential(
+            nn.Linear(gate_in_dim, int(gate_hidden_dim)),
+            nn.ReLU(),
+            nn.Linear(int(gate_hidden_dim), int(task_hidden_dim)),
+            nn.Sigmoid(),
+        )
+        self.stage_img_block = nn.Sequential(
+            nn.Linear(int(img_out_dim), int(fusion_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_fusion)),
+            nn.Linear(int(fusion_hidden_dim), int(task_hidden_dim)),
+            nn.GELU(),
+        )
+        self.stage_corr_block = nn.Sequential(
+            nn.Linear(in_dim, int(task_hidden_dim)),
+            nn.GELU(),
+            nn.Linear(int(task_hidden_dim), int(task_hidden_dim)),
+        )
+        self.stage_gate = nn.Sequential(
+            nn.Linear(gate_in_dim, int(gate_hidden_dim)),
+            nn.ReLU(),
+            nn.Linear(int(gate_hidden_dim), int(task_hidden_dim)),
+            nn.Sigmoid(),
+        )
+        self.head_grade = nn.Linear(int(task_hidden_dim), int(num_class_grade))
+        self.head_stage = nn.Linear(int(task_hidden_dim), int(num_class_stage))
+        self.head_cond_q1 = nn.Sequential(nn.Linear(cond_dim, 64), nn.ReLU(), nn.Linear(64, 1))
+        self.head_cond_q2 = nn.Sequential(nn.Linear(cond_dim, 64), nn.ReLU(), nn.Linear(64, 1))
+
+    def _grade_probs_from_logits(self, grade_logits):
+        ge = corn_marginal_ge_probs(torch.sigmoid(grade_logits))
+        p = torch.stack([1.0 - ge[:, 0], ge[:, 0] - ge[:, 1], ge[:, 1] - ge[:, 2], ge[:, 2]], dim=1)
+        return p / p.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    def forward(self, x):
+        if not isinstance(x, dict):
+            raise ValueError("EmbeddingTabularV2LiteModel 需要 dict 输入: {'img_emb', 'tab'}")
+        z_img = self.img_tower(x["img_emb"])
+        z_tab = self.tab_tower(x["tab"])
+        tab_reliability = x["tab"][:, [1, 4]]
+        fused = torch.cat([z_img, z_tab], dim=1)
+
+        h_g_img = self.grade_img_block(z_img)
+        delta_g = self.grade_corr_block(fused)
+        gate_g = self.grade_gate(torch.cat([h_g_img, z_tab, tab_reliability], dim=1))
+        h_g = h_g_img + gate_g * delta_g if self.use_residual_gated_fusion else h_g_img + delta_g
+        grade_logits = self.head_grade(h_g)
+
+        h_s_img = self.stage_img_block(z_img)
+        delta_s = self.stage_corr_block(fused)
+        gate_s = self.stage_gate(torch.cat([h_s_img, z_tab, tab_reliability], dim=1))
+        h_s = h_s_img + gate_s * delta_s if self.use_residual_gated_fusion else h_s_img + delta_s
+        stage_ind_logits = self.head_stage(h_s)
+
+        pG_ctx = self._grade_probs_from_logits(grade_logits)
+        if self.use_stopgrad_grade_for_cond:
+            pG_ctx = pG_ctx.detach()
+        cond_in = torch.cat([h_s, z_tab, pG_ctx], dim=1)
+        return {
+            "grade_logits": grade_logits,
+            "stage_ind_logits": stage_ind_logits,
+            "q1_logit": self.head_cond_q1(cond_in),
+            "q2_logit": self.head_cond_q2(cond_in),
+            "gate_g": gate_g,
+            "gate_s": gate_s,
+            "pG_ctx": pG_ctx,
+        }
 
 
 

@@ -1277,6 +1277,12 @@ class advCheX_hyp_grade_stage_embtab_base(Dataset):
         return len(self.img_list)
 
 
+class advCheX_hyp_grade_stage_embtab_v2lite(advCheX_hyp_grade_stage_embtab_base):
+    """Embedding + tabular v2-lite dataset: reuse embtab-base loading and tab normalization."""
+
+    pass
+
+
 class advCheX_hyp_grade_stage_v2(advCheX_hyp_multi_grade_stage_v1):
     """v2 数据集薄包装：复用 v1 的 CSV 读取与监督结构。"""
 
