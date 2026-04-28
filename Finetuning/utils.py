@@ -1,4 +1,4 @@
-from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score, confusion_matrix, brier_score_loss
+from sklearn.metrics import roc_curve, roc_auc_score, accuracy_score, average_precision_score, f1_score, matthews_corrcoef, recall_score, confusion_matrix, brier_score_loss, precision_score
 import torch
 import numpy as np
 import json
@@ -1901,6 +1901,83 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
         },
         'joint_graph_distance_matrix': D.tolist(),
     })
+    is_v2lite_tag = str(dataset_tag).lower() == "v2lite"
+    if is_v2lite_tag:
+        prob_grade_any_fused = 1.0 - pG_fused[:, 0]
+        prob_stage_any_fused = 1.0 - pS_fused[:, 0]
+        metrics.update({
+            'MAE_grade_fused': float(np.mean(np.abs(grade_pred_fused - grades_true))),
+            'MAE_stage_fused': float(np.mean(np.abs(stage_pred_fused - stages_true))),
+            'QWK_grade_fused': _safe_kappa(grades_true, grade_pred_fused),
+            'QWK_stage_fused': _safe_kappa(stages_true, stage_pred_fused),
+            'ACC_grade_fused': float(np.mean(grade_pred_fused == grades_true)),
+            'ACC_stage_fused': float(np.mean(stage_pred_fused == stages_true)),
+            'ACC_joint6_fused': float(np.mean(joint_pred_fused == joint_gt)),
+            'AUROC_grade_any_htn_fused': safe_roc_auc((grades_true > 0).astype(int), prob_grade_any_fused),
+            'AUROC_grade_ge2_fused': safe_roc_auc((grades_true >= 2).astype(int), pG_fused[:, 2] + pG_fused[:, 3]),
+            'AUROC_grade_ge3_fused': safe_roc_auc((grades_true >= 3).astype(int), pG_fused[:, 3]),
+            'AUROC_stage_any_htn_fused': safe_roc_auc((stages_true > 0).astype(int), prob_stage_any_fused),
+            'AUROC_stage_ge2_fused': safe_roc_auc((stages_true >= 2).astype(int), pS_fused[:, 2]),
+        })
+        _plot_roc_curve((grades_true > 0).astype(int), prob_grade_any_fused, "ROC grade any HTN (fused)", os.path.join(output_dir, "roc_grade_any_htn_fused.png"))
+        _plot_roc_comparison(
+            [("grade>=1(any_htn)", (grades_true > 0).astype(int), prob_grade_any_fused),
+             ("grade>=2", (grades_true >= 2).astype(int), pG_fused[:, 2] + pG_fused[:, 3]),
+             ("grade>=3", (grades_true >= 3).astype(int), pG_fused[:, 3])],
+            "ROC Grade Comparison (fused)",
+            os.path.join(output_dir, "roc_grade_comparison_fused.png"),
+        )
+        _plot_roc_curve((stages_true > 0).astype(int), prob_stage_any_fused, "ROC stage any HTN (fused)", os.path.join(output_dir, "roc_stage_any_htn_fused.png"))
+        _plot_roc_comparison(
+            [("stage>=1(any_htn)", (stages_true > 0).astype(int), prob_stage_any_fused),
+             ("stage>=2", (stages_true >= 2).astype(int), pS_fused[:, 2])],
+            "ROC Stage Comparison (fused)",
+            os.path.join(output_dir, "roc_stage_comparison_fused.png"),
+        )
+
+        def _ovr_pack(y_true, y_pred, labels, prefix):
+            y_true = np.asarray(y_true).astype(int)
+            y_pred = np.asarray(y_pred).astype(int)
+            out = {}
+            support = np.array([(y_true == c).sum() for c in labels], dtype=np.float64)
+            w = support / max(support.sum(), 1.0)
+            p_list, r_list, s_list, a_list = [], [], [], []
+            for idx, c in enumerate(labels):
+                yt = (y_true == c).astype(np.int32)
+                yp = (y_pred == c).astype(np.int32)
+                tp = float(np.sum((yt == 1) & (yp == 1)))
+                tn = float(np.sum((yt == 0) & (yp == 0)))
+                fp = float(np.sum((yt == 0) & (yp == 1)))
+                fn = float(np.sum((yt == 1) & (yp == 0)))
+                precision = tp / max(tp + fp, 1.0)
+                recall = tp / max(tp + fn, 1.0)  # sensitivity
+                specificity = tn / max(tn + fp, 1.0)
+                accuracy = (tp + tn) / max(tp + tn + fp + fn, 1.0)
+                p_list.append(precision); r_list.append(recall); s_list.append(specificity); a_list.append(accuracy)
+                out[f"{prefix}_class_{c}"] = {
+                    "precision": float(precision),
+                    "sensitivity": float(recall),
+                    "specificity": float(specificity),
+                    "accuracy": float(accuracy),
+                    "support": int(support[idx]),
+                }
+            out[f"{prefix}_macro_avg"] = {
+                "precision": float(np.mean(p_list)),
+                "sensitivity": float(np.mean(r_list)),
+                "specificity": float(np.mean(s_list)),
+                "accuracy": float(np.mean(a_list)),
+            }
+            out[f"{prefix}_weighted_avg"] = {
+                "precision": float(np.sum(np.array(p_list) * w)),
+                "sensitivity": float(np.sum(np.array(r_list) * w)),
+                "specificity": float(np.sum(np.array(s_list) * w)),
+                "accuracy": float(np.sum(np.array(a_list) * w)),
+            }
+            return out
+
+        metrics["ovr_joint6_fused"] = _ovr_pack(joint_gt, joint_pred_fused, labels=[0,1,2,3,4,5], prefix="joint6_fused")
+        metrics["ovr_grade_fused"] = _ovr_pack(grades_true, grade_pred_fused, labels=[0,1,2,3], prefix="grade_fused")
+        metrics["ovr_stage_fused"] = _ovr_pack(stages_true, stage_pred_fused, labels=[0,1,2], prefix="stage_fused")
     mask_g1 = grades_true == 1
     mask_g2 = grades_true == 2
     metrics['AUC_cond_11_vs12'] = safe_roc_auc((stages_true[mask_g1] == 1).astype(int), q1[mask_g1]) if mask_g1.sum() > 1 else np.nan
@@ -1923,4 +2000,36 @@ def evaluate_grade_stage_v2(y_grade, y_stage, p_ge_grade, p_ge_stage, output_dir
         'teacher_force_grade_epochs': metrics['teacher_force_grade_epochs'],
         'graph_edge_weights_summary': metrics['graph_edge_weights_summary'],
     }, ensure_ascii=False)])
+    if is_v2lite_tag:
+        report_lines.extend([
+            "",
+            "[v2lite fused scalar metrics]",
+            f"MAE_grade_fused={metrics['MAE_grade_fused']}",
+            f"QWK_grade_fused={metrics['QWK_grade_fused']}",
+            f"MAE_stage_fused={metrics['MAE_stage_fused']}",
+            f"QWK_stage_fused={metrics['QWK_stage_fused']}",
+            f"ACC_grade_fused={metrics['ACC_grade_fused']}",
+            f"ACC_stage_fused={metrics['ACC_stage_fused']}",
+            f"ACC_joint6_fused={metrics['ACC_joint6_fused']}",
+            f"AUROC_grade_any_htn_fused={metrics['AUROC_grade_any_htn_fused']}",
+            f"AUROC_grade_ge2_fused={metrics['AUROC_grade_ge2_fused']}",
+            f"AUROC_grade_ge3_fused={metrics['AUROC_grade_ge3_fused']}",
+            f"AUROC_stage_any_htn_fused={metrics['AUROC_stage_any_htn_fused']}",
+            f"AUROC_stage_ge2_fused={metrics['AUROC_stage_ge2_fused']}",
+            "",
+            "[v2lite fused ovr metrics - joint6]",
+            json.dumps(metrics["ovr_joint6_fused"], ensure_ascii=False),
+            "",
+            "[v2lite fused ovr metrics - grade]",
+            json.dumps(metrics["ovr_grade_fused"], ensure_ascii=False),
+            "",
+            "[v2lite fused ovr metrics - stage]",
+            json.dumps(metrics["ovr_stage_fused"], ensure_ascii=False),
+            "",
+            "[v2lite fused ROC]",
+            "roc_grade_any_htn_fused.png",
+            "roc_grade_comparison_fused.png",
+            "roc_stage_any_htn_fused.png",
+            "roc_stage_comparison_fused.png",
+        ])
     return metrics, rows, report_lines
