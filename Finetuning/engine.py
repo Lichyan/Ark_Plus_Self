@@ -345,6 +345,32 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             'pS_fused3': pS_fused,
         }
 
+    def _v2lite_joint_from_outputs(self, outputs, eps=1e-8):
+        ge_g = corn_marginal_ge_probs(torch.sigmoid(outputs['grade_logits']))
+        ge_s = corn_marginal_ge_probs(torch.sigmoid(outputs['stage_ind_logits']))
+        pG = self._build_full_grade_probs_from_ge(ge_g)
+        pS = self._build_full_stage_probs_from_ge(ge_s)
+        q1 = torch.sigmoid(outputs['q1_logit'].view(-1))
+        q2 = torch.sigmoid(outputs['q2_logit'].view(-1))
+        beta = float(getattr(self, 'joint_beta_stage', 0.5))
+        gamma = float(getattr(self, 'joint_gamma_cond', 0.5))
+        pg = pG.clamp(eps, 1.0)
+        ps = pS.clamp(eps, 1.0)
+        q1c = q1.clamp(eps, 1.0 - eps)
+        q2c = q2.clamp(eps, 1.0 - eps)
+        joint_logits = torch.stack([
+            torch.log(pg[:, 0]) + beta * torch.log(ps[:, 0]),
+            torch.log(pg[:, 1]) + beta * torch.log(ps[:, 1]) + gamma * torch.log(q1c),
+            torch.log(pg[:, 1]) + beta * torch.log(ps[:, 2]) + gamma * torch.log(1.0 - q1c),
+            torch.log(pg[:, 2]) + beta * torch.log(ps[:, 1]) + gamma * torch.log(q2c),
+            torch.log(pg[:, 2]) + beta * torch.log(ps[:, 2]) + gamma * torch.log(1.0 - q2c),
+            torch.log(pg[:, 3]) + beta * torch.log(ps[:, 2]),
+        ], dim=1)
+        P_joint6 = torch.softmax(joint_logits, dim=1)
+        pG_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 2], P_joint6[:, 3] + P_joint6[:, 4], P_joint6[:, 5]], dim=1)
+        pS_fused = torch.stack([P_joint6[:, 0], P_joint6[:, 1] + P_joint6[:, 3], P_joint6[:, 2] + P_joint6[:, 4] + P_joint6[:, 5]], dim=1)
+        return {'pG_raw4': pG, 'pS_ind3': pS, 'q1': q1, 'q2': q2, 'joint_logits': joint_logits, 'P_joint6': P_joint6, 'pG_fused4': pG_fused, 'pS_fused3': pS_fused}
+
     def set_epoch(self, epoch):
         self.current_epoch = epoch
 
@@ -466,7 +492,8 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 raw_grade = torch.sum(y_grade > 0.5, dim=1).long()
             if raw_stage is None:
                 raw_stage = torch.sum(y_stage > 0.5, dim=1).long()
-            fused = self._v2_joint_from_outputs(outputs)
+            is_v2lite = str(getattr(self, "data_set", "")).lower() == "advchex_hyp_grade_stage_embtab_v2lite"
+            fused = self._v2lite_joint_from_outputs(outputs) if is_v2lite else self._v2_joint_from_outputs(outputs)
             loss_grade_base = self._corn_task_loss(outputs['grade_logits'], y_grade, pos_weight=self.loss_grade.pos_weight)
             loss_grade_soft = loss_grade_base.new_tensor(0.0)
             if str(getattr(self, 'v1_soft_label_mode', 'none') or 'none').lower() == 'full':
@@ -495,13 +522,19 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
 
             D = self._graph_distance_matrix(fused['P_joint6'].device)
             tau = float(getattr(self, 'joint_graph_tau', 0.7))
-            soft_targets = torch.softmax(-D[targets['joint_id'].long()] / max(tau, 1e-6), dim=1)
-            loss_soft_joint = (-(soft_targets * torch.log(fused['P_joint6'].clamp_min(1e-8))).sum(dim=1)).mean()
-            expected_cost = (fused['P_joint6'] * D[targets['joint_id'].long()]).sum(dim=1).mean()
-            lambda_soft_joint_eff = float(getattr(self, 'lambda_soft_joint', 0.15) or 0.0) * self._v2_soft_joint_factor()
-            if getattr(self, 'lpv3_active', False) and self.current_epoch < int(getattr(self, 'lpv3_enable_soft_joint_after_epoch', 10) or 10):
-                lambda_soft_joint_eff = 0.0
-            loss = loss_grade + float(getattr(self, 'lambda_stage_marg', 0.8)) * (loss_stage_marg_ind + float(getattr(self, 'stage_fused_aux_weight', 0.3)) * loss_stage_marg_fused) + float(getattr(self, 'lambda_cond_stage', 0.6)) * (loss_cond_11_12 + loss_cond_21_22) + lambda_soft_joint_eff * loss_soft_joint
+            if is_v2lite:
+                loss_soft_joint = F.nll_loss(torch.log(fused['P_joint6'].clamp_min(1e-8)), targets['joint_id'].long())
+                lambda_soft_joint_eff = float(getattr(self, 'lambda_joint_soft', 0.05) or 0.0)
+                expected_cost = (fused['P_joint6'] * D[targets['joint_id'].long()]).sum(dim=1).mean()
+                loss = loss_grade + float(getattr(self, 'lambda_stage_marg', 1.0)) * loss_stage_marg_ind + float(getattr(self, 'lambda_cond', 0.5)) * (loss_cond_11_12 + loss_cond_21_22) + lambda_soft_joint_eff * loss_soft_joint
+            else:
+                soft_targets = torch.softmax(-D[targets['joint_id'].long()] / max(tau, 1e-6), dim=1)
+                loss_soft_joint = (-(soft_targets * torch.log(fused['P_joint6'].clamp_min(1e-8))).sum(dim=1)).mean()
+                expected_cost = (fused['P_joint6'] * D[targets['joint_id'].long()]).sum(dim=1).mean()
+                lambda_soft_joint_eff = float(getattr(self, 'lambda_soft_joint', 0.15) or 0.0) * self._v2_soft_joint_factor()
+                if getattr(self, 'lpv3_active', False) and self.current_epoch < int(getattr(self, 'lpv3_enable_soft_joint_after_epoch', 10) or 10):
+                    lambda_soft_joint_eff = 0.0
+                loss = loss_grade + float(getattr(self, 'lambda_stage_marg', 0.8)) * (loss_stage_marg_ind + float(getattr(self, 'stage_fused_aux_weight', 0.3)) * loss_stage_marg_fused) + float(getattr(self, 'lambda_cond_stage', 0.6)) * (loss_cond_11_12 + loss_cond_21_22) + lambda_soft_joint_eff * loss_soft_joint
             feature_before = outputs.get('features_before_neck')
             feature_after = outputs.get('shared_features')
             mean_feature_norm_before = float(feature_before.norm(dim=1).mean().detach().cpu()) if isinstance(feature_before, torch.Tensor) else 0.0
@@ -516,11 +549,13 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
                 'loss_cond_11_12': float(loss_cond_11_12.detach().cpu()),
                 'loss_cond_21_22': float(loss_cond_21_22.detach().cpu()),
                 'loss_soft_joint': float(loss_soft_joint.detach().cpu()),
-                'mean_alpha_gate': float(fused['alpha'].mean().detach().cpu()),
+                'mean_alpha_gate': float(fused['alpha'].mean().detach().cpu()) if 'alpha' in fused else 1.0,
                 'mean_q1': float(fused['q1'].mean().detach().cpu()),
                 'mean_q2': float(fused['q2'].mean().detach().cpu()),
                 'mean_expected_joint_graph_cost': float(expected_cost.detach().cpu()),
                 'lambda_soft_joint_eff': float(lambda_soft_joint_eff),
+                'mean_gate_g': float(outputs['gate_g'].mean().detach().cpu()) if 'gate_g' in outputs else 0.0,
+                'mean_gate_s': float(outputs['gate_s'].mean().detach().cpu()) if 'gate_s' in outputs else 0.0,
                 'mean_feature_norm_before_neck': mean_feature_norm_before,
                 'mean_feature_norm_after_neck': mean_feature_norm_after,
                 'mean_neck_norm': mean_feature_norm_after,
@@ -775,6 +810,47 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
     )
 
 
+def _collect_outputs_multi_v2lite(model, data_loader, device, joint_beta_stage=0.5, joint_gamma_cond=0.5):
+    model.eval()
+    y_grade_all, y_stage_all = [], []
+    p_grade_ge_all, p_stage_ge_all = [], []
+    p_joint6_all, pG_fused_all, pS_fused_all = [], [], []
+    with torch.no_grad():
+        for batch in tqdm(data_loader):
+            if batch is None:
+                continue
+            samples, targets = batch
+            if isinstance(samples, dict):
+                samples = {k: v.float().to(device) if torch.is_tensor(v) else v for k, v in samples.items()}
+            else:
+                samples = samples.float().to(device)
+            out = model(samples)
+            if not (isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"])):
+                raise TypeError("v2lite 验证期期望 dict 输出且包含 grade/stage/q1/q2")
+            p_grade_ge = corn_marginal_ge_probs(torch.sigmoid(out["grade_logits"]))
+            p_stage_ge = corn_marginal_ge_probs(torch.sigmoid(out["stage_ind_logits"]))
+            joint = compose_v2_joint_predictions(
+                p_grade_ge, p_stage_ge, out["q1_logit"], out["q2_logit"],
+                joint_beta_stage=float(joint_beta_stage), joint_gamma_cond=float(joint_gamma_cond), use_entropy_alpha=False,
+            )
+            y_grade_all.append(targets["y_grade"].cpu())
+            y_stage_all.append(targets["y_stage"].cpu())
+            p_grade_ge_all.append(p_grade_ge.cpu())
+            p_stage_ge_all.append(p_stage_ge.cpu())
+            p_joint6_all.append(joint["P_joint6"].cpu())
+            pG_fused_all.append(joint["pG_fused4"].cpu())
+            pS_fused_all.append(joint["pS_fused3"].cpu())
+    return {
+        "y_grade": torch.cat(y_grade_all, dim=0).numpy(),
+        "y_stage": torch.cat(y_stage_all, dim=0).numpy(),
+        "p_grade_ge": torch.cat(p_grade_ge_all, dim=0).numpy(),
+        "p_stage_ge": torch.cat(p_stage_ge_all, dim=0).numpy(),
+        "p_joint6": torch.cat(p_joint6_all, dim=0).numpy(),
+        "pG_fused": torch.cat(pG_fused_all, dim=0).numpy(),
+        "pS_fused": torch.cat(pS_fused_all, dim=0).numpy(),
+    }
+
+
 def _load_ordinal_thresholds(saved_model, args):
     if args.thresholds_json and os.path.exists(args.thresholds_json):
         return load_thresholds_json(args.thresholds_json)
@@ -885,8 +961,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
+    if hasattr(dataset_test, "return_path"):
+      dataset_test.return_path = True
+  if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" and bool(getattr(args, "return_path", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
 
@@ -1010,8 +1089,11 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.joint_gamma_cond = float(getattr(args, "joint_gamma_cond", 0.5) or 0.5)
         criterion.v2_soft_joint_start_epoch = int(getattr(args, "v2_soft_joint_start_epoch", 5) or 5)
         criterion.v2_soft_joint_warmup_epochs = int(getattr(args, "v2_soft_joint_warmup_epochs", 5) or 5)
+        criterion.lambda_cond = float(getattr(args, "lambda_cond", 0.5) or 0.0)
+        criterion.lambda_joint_soft = float(getattr(args, "lambda_joint_soft", 0.05) or 0.0)
         criterion.alpha_gate_min = float(getattr(args, "alpha_gate_min", 0.15) or 0.15)
         criterion.alpha_gate_max = float(getattr(args, "alpha_gate_max", 0.65) or 0.65)
+        criterion.data_set = str(getattr(args, "data_set", ""))
         criterion.lpv3_active = _is_lpv3_active(args)
         criterion.lpv3_enable_cond_after_epoch = int(getattr(args, "lpv3_enable_cond_after_epoch", 3) or 3)
         criterion.lpv3_enable_soft_joint_after_epoch = int(getattr(args, "lpv3_enable_soft_joint_after_epoch", 10) or 10)
@@ -1022,6 +1104,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         criterion.joint_graph_w_12_22 = float(getattr(args, "joint_graph_w_12_22", 0.7) or 0.7)
         criterion.joint_graph_w_22_32 = float(getattr(args, "joint_graph_w_22_32", 1.5) or 1.5)
         if args.data_set == "advCheX_hyp_grade_stage_embtab_base":
+          criterion.v1_soft_label_mode = "full"
+          criterion.loss_w_stage_soft = 0.0
+        if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
           criterion.v1_soft_label_mode = "full"
           criterion.loss_w_stage_soft = 0.0
         if getattr(args, "pos_weight_anyhtn", None):
@@ -1217,6 +1302,33 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               ),
               flush=True,
             )
+          elif args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+            print(
+              "[MultiHead][Loss][v2lite] train: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} "
+              "C_11v12={:.4f} C_21v22={:.4f} J_legal={:.4f} gate_g={:.4f} gate_s={:.4f} total={:.4f} | "
+              "val: G_main={:.4f} G_soft={:.4f} S_ind={:.4f} C_11v12={:.4f} C_21v22={:.4f} J_legal={:.4f} "
+              "gate_g={:.4f} gate_s={:.4f} total={:.4f}".format(
+                train_components.get("loss_grade_main", 0.0),
+                train_components.get("loss_grade_soft", 0.0),
+                train_components.get("loss_stage_marg_ind", 0.0),
+                train_components.get("loss_cond_11_12", 0.0),
+                train_components.get("loss_cond_21_22", 0.0),
+                train_components.get("loss_soft_joint", 0.0),
+                train_components.get("mean_gate_g", 0.0),
+                train_components.get("mean_gate_s", 0.0),
+                train_components.get("loss_total", train_loss),
+                val_components.get("loss_grade_main", 0.0),
+                val_components.get("loss_grade_soft", 0.0),
+                val_components.get("loss_stage_marg_ind", 0.0),
+                val_components.get("loss_cond_11_12", 0.0),
+                val_components.get("loss_cond_21_22", 0.0),
+                val_components.get("loss_soft_joint", 0.0),
+                val_components.get("mean_gate_g", 0.0),
+                val_components.get("mean_gate_s", 0.0),
+                val_components.get("loss_total", val_loss),
+              ),
+              flush=True,
+            )
           elif args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" and str(getattr(args, "sep_head_mode", "flat")).lower() == "coarse_fine":
             print(
               "[MultiHead][Loss][coarse_fine] train: H_bce={:.4f} H_auc={:.4f} H_total={:.4f} "
@@ -1273,36 +1385,58 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           else:
             print(f"Epoch {epoch:04d}: val_auc_hypertension=N/A (single class)", flush=True)
         if args.data_set in multihead_datasets:
-          y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
-            model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
-          )
-          prior = build_joint_prior_mimic(
-            np.array([ordinal_targets_to_grade(row) for row in y_grade_val]),
-            np.array([ordinal_targets_to_grade(row) for row in y_stage_val]),
-            eps=getattr(args, "joint_prior_eps", 1e-3),
-          )
-          val_metrics, _, _, _ = evaluate_grade_stage_joint(
-            y_grade_val,
-            y_stage_val,
-            p_grade_val,
-            p_stage_val,
-            prior=prior,
-            prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
-            softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
-            ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
-          )
-          val_joint = val_metrics.get("joint_exact_acc_pjoint")
+          if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+            val_pack = _collect_outputs_multi_v2lite(
+              model, data_loader_val, device,
+              joint_beta_stage=getattr(args, "joint_beta_stage", 0.5),
+              joint_gamma_cond=getattr(args, "joint_gamma_cond", 0.5),
+            )
+            y_grade_val = val_pack["y_grade"]
+            y_stage_val = val_pack["y_stage"]
+            p_grade_val = val_pack["p_grade_ge"]
+            p_stage_val = val_pack["p_stage_ge"]
+            pG_val = val_pack["pG_fused"]
+            pS_val = val_pack["pS_fused"]
+            grade_pred = np.argmax(pG_val, axis=1)
+            stage_pred = np.argmax(pS_val, axis=1)
+            joint_probs = val_pack["p_joint6"]
+            joint_pred = np.argmax(joint_probs, axis=1)
+            joint_true = np.array([
+              JOINT_LABEL_TO_INDEX[(ordinal_targets_to_grade(g), ordinal_targets_to_grade(s))]
+              for g, s in zip(y_grade_val, y_stage_val)
+            ], dtype=np.int64)
+            val_joint = float(np.mean(joint_pred == joint_true)) if joint_true.size > 0 else np.nan
+          else:
+            y_grade_val, y_stage_val, p_grade_val, p_stage_val = _collect_outputs_multi(
+              model, data_loader_val, device, ordinal_mode=getattr(args, "ordinal_mode", "default")
+            )
+            prior = build_joint_prior_mimic(
+              np.array([ordinal_targets_to_grade(row) for row in y_grade_val]),
+              np.array([ordinal_targets_to_grade(row) for row in y_stage_val]),
+              eps=getattr(args, "joint_prior_eps", 1e-3),
+            )
+            val_metrics, _, _, _ = evaluate_grade_stage_joint(
+              y_grade_val,
+              y_stage_val,
+              p_grade_val,
+              p_stage_val,
+              prior=prior,
+              prior_alpha=getattr(args, "joint_prior_alpha", 0.2),
+              softacc_gamma_over=getattr(args, "softacc_gamma_over", 0.5),
+              ordinal_mode=getattr(args, "ordinal_mode", "coral").upper(),
+            )
+            val_joint = val_metrics.get("joint_exact_acc_pjoint")
+            pG_val = ordinal_probs_to_class_probs(p_grade_val)
+            pS_val = ordinal_probs_to_class_probs(p_stage_val)
+            grade_pred = np.argmax(pG_val, axis=1)
+            stage_pred = np.argmax(pS_val, axis=1)
+            joint_probs = compute_joint_distribution(
+              pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
+            )
+            joint_pred = np.argmax(joint_probs, axis=1)
           if val_joint is not None:
             print(f"Epoch {epoch:04d}: val_joint_exact_acc_pjoint={val_joint:.4f}", flush=True)
           print(f"[MultiHead][Mode] ordinal_mode={getattr(args, 'ordinal_mode', 'default')}", flush=True)
-          pG_val = ordinal_probs_to_class_probs(p_grade_val)
-          pS_val = ordinal_probs_to_class_probs(p_stage_val)
-          grade_pred = np.argmax(pG_val, axis=1)
-          stage_pred = np.argmax(pS_val, axis=1)
-          joint_probs = compute_joint_distribution(
-            pG_val, pS_val, prior=prior, alpha=getattr(args, "joint_prior_alpha", 0.2)
-          )
-          joint_pred = np.argmax(joint_probs, axis=1)
           grade_counts = np.bincount(grade_pred, minlength=4)
           stage_counts = np.bincount(stage_pred, minlength=3)
           joint_counts = np.bincount(joint_pred, minlength=len(JOINT_LABELS))
@@ -1519,6 +1653,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
           "advCheX_hyp_multi_grade_stage_v1",
         "advCheX_hyp_multi_grade_stage_sep_v1",
         "advCheX_hyp_grade_stage_embtab_base",
+        "advCheX_hyp_grade_stage_embtab_v2lite",
         }
         if use_cached:
           y_test = read_from_csv(gt_csv)
@@ -1569,8 +1704,12 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               aux_scores["pG_fused"] = p_test["pG_fused"].cpu().numpy()
               aux_scores["pS_fused"] = p_test["pS_fused"].cpu().numpy()
               aux_scores["alpha_gate"] = p_test["alpha_gate"].cpu().numpy()
+              if "gate_g" in p_test:
+                aux_scores["gate_g"] = p_test["gate_g"].cpu().numpy()
+              if "gate_s" in p_test:
+                aux_scores["gate_s"] = p_test["gate_s"].cpu().numpy()
 
-          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base"}:
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1605,7 +1744,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 val_p_stage = p_val_pred["stage"].cpu().numpy()
               else:
                 raise ValueError("Expected multi-head dict outputs on validation decoder pass, but got non-dict outputs.")
-            eval_fn = evaluate_grade_stage_v2 if args.data_set == "advCheX_hyp_grade_stage_v2" else evaluate_grade_stage_sep
+            eval_fn = evaluate_grade_stage_v2 if args.data_set in {"advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_v2lite"} else evaluate_grade_stage_sep
             eval_kwargs = dict(
               output_dir=output_dir, path_list=path_list,
               modethese=getattr(args, "modethese", False),
@@ -1636,7 +1775,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
               loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
-              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set == "advCheX_hyp_grade_stage_embtab_base" else "v1"))),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2lite" if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set == "advCheX_hyp_grade_stage_embtab_base" else "v1")))),
               v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
               grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
               stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
@@ -1646,11 +1785,13 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               joint_detach=getattr(args, "joint_detach", "both"),
               incomp_mode=getattr(args, "incomp_mode", "mask_sum"),
             )
-            if args.data_set == "advCheX_hyp_grade_stage_v2":
+            if args.data_set in {"advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_v2lite"}:
               eval_kwargs.update(
                 lambda_stage_marg=getattr(args, "lambda_stage_marg", 0.8),
                 lambda_cond_stage=getattr(args, "lambda_cond_stage", 0.6),
                 lambda_soft_joint=getattr(args, "lambda_soft_joint", 0.15),
+                lambda_cond=getattr(args, "lambda_cond", 0.5),
+                lambda_joint_soft=getattr(args, "lambda_joint_soft", 0.05),
                 stage_fused_aux_weight=getattr(args, "stage_fused_aux_weight", 0.3),
                 cond_pos_weight_g1=getattr(args, "cond_pos_weight_g1", 3.0),
                 cond_pos_weight_g2=getattr(args, "cond_pos_weight_g2", 5.0),
@@ -1669,6 +1810,8 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
                 joint_graph_w_21_22=getattr(args, "joint_graph_w_21_22", 0.8),
                 joint_graph_w_12_22=getattr(args, "joint_graph_w_12_22", 0.7),
                 joint_graph_w_22_32=getattr(args, "joint_graph_w_22_32", 1.5),
+                use_v2lite_fused_eval=getattr(args, "use_v2lite_fused_eval", True),
+                use_legal_joint_composer=getattr(args, "use_legal_joint_composer", True),
               )
             metrics, pred_rows, report_lines = eval_fn(
               y_grade, y_stage, p_grade, p_stage, **eval_kwargs
@@ -1700,6 +1843,22 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               }
               metrics["embtab_base"] = embtab_summary
               report_lines.extend(["", "[embtab-base summary]"] + [f"{k}={v}" for k, v in embtab_summary.items()])
+            if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite":
+              v2lite_summary = {
+                "mean_gate_g": float(np.mean(aux_scores["gate_g"])) if "gate_g" in aux_scores else None,
+                "mean_gate_s": float(np.mean(aux_scores["gate_s"])) if "gate_s" in aux_scores else None,
+                "use_stopgrad_grade_for_cond": bool(getattr(args, "use_stopgrad_grade_for_cond", True)),
+                "joint_beta_stage": float(getattr(args, "joint_beta_stage", 0.5)),
+                "joint_gamma_cond": float(getattr(args, "joint_gamma_cond", 0.5)),
+                "cond_pos_weight_g1": float(getattr(args, "cond_pos_weight_g1", 3.0)),
+                "cond_pos_weight_g2": float(getattr(args, "cond_pos_weight_g2", 5.0)),
+                "embtab_v2lite_grade_fusion": "residual_gated",
+                "embtab_v2lite_stage_fusion": "residual_gated",
+                "embtab_v2lite_conditional_stage": True,
+                "embtab_v2lite_stage_soft_label": False,
+              }
+              metrics["embtab_v2lite"] = v2lite_summary
+              report_lines.extend(["", "[embtab-v2lite summary]"] + [f"{k}={v}" for k, v in v2lite_summary.items()])
             with open(os.path.join(output_dir, "metrics.json"), 'w') as fm:
               json.dump(metrics, fm, indent=2, ensure_ascii=False)
             with open(os.path.join(output_dir, "result.txt"), 'w', encoding='utf-8') as fr:
@@ -1909,6 +2068,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_grade_stage_sep_v1",
         "advCheX_hyp_grade_stage_v2",
         "advCheX_hyp_grade_stage_embtab_base",
+        "advCheX_hyp_grade_stage_embtab_v2lite",
       }:
         return
 
