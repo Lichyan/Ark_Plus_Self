@@ -965,6 +965,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
+  if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" and bool(getattr(args, "return_path", False)):
+    if hasattr(dataset_test, "return_path"):
+      dataset_test.return_path = True
 
   data_loader_test = DataLoader(dataset=dataset_test, batch_size=int(args.batch_size/2), shuffle=False,
                             num_workers=args.workers, pin_memory=True, collate_fn=safe_collate, persistent_workers=False)

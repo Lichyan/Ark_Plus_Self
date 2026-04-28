@@ -126,6 +126,8 @@ def get_args_parser():
     parser.add_option("--print_freq", dest="print_freq", help="print frequency", default=50, type="int")
     parser.add_option("--test_augment", dest="test_augment", help="whether use test time augmentation",
                       default=True, action="callback", callback=vararg_callback_bool)
+    parser.add_option("--return_path", dest="return_path", help="whether return sample paths in test outputs (supported by specific datasets)", default=False,
+                      action="callback", callback=vararg_callback_bool)
     parser.add_option("--anno_percent", dest="anno_percent", help="data percent", default=100, type="int")
     parser.add_option("--device", dest="device", help="cpu|cuda", default="cuda", type="string")
     parser.add_option("--activate", dest="activate", help="Sigmoid", default="Sigmoid", type="string")
