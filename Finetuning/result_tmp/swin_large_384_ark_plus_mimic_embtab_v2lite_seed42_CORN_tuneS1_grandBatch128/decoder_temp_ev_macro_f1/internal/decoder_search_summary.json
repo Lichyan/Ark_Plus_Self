@@ -1,0 +1,11 @@
+{
+  "temperature": {
+    "grade_nll": 0.45545332172199093,
+    "stage_nll": 0.5514601663154298,
+    "objective": "nll"
+  },
+  "ev": {
+    "grade_best": 0.37760602963211776,
+    "stage_best": 0.5231779889363565
+  }
+}

@@ -1,0 +1,157 @@
+[v2lite test summary]
+N=200
+
+[scalar metrics]
+MAE_grade=0.325000
+QWK_grade=0.364669
+MAE_stage=0.290000
+QWK_stage=0.411765
+AUROC_grade_any_htn=0.9699322416713722
+AUROC_grade_ge1=0.9699322416713722
+AUROC_grade_ge2=0.9476506639427987
+AUROC_grade_ge3=0.9487179487179487
+AUROC_stage_any_htn=0.9737436476566911
+AUROC_stage_ge1=0.9737436476566911
+AUROC_stage_ge2=0.9649184975194898
+ECE_grade_any_htn=0.13856078356504442
+Brier_grade_any_htn=0.08876259345649215
+ECE_stage_any_htn=0.12993354797363282
+Brier_stage_any_htn=0.09483131484129168
+invalid_rate=0.03
+
+[Decoder Summary]
+{"decoder_mode": "non", "decoder_objective": "qwk", "used_saved_thresholds": false, "has_val_search": false, "temperature_grade": null, "temperature_stage": null}
+
+[Coarse-to-Fine Summary]
+sep_head_mode=flat
+AUROC_anyhtn_coarse=None
+coarse_auc_loss_mode=none
+loss_w_anyhtn_auc=0.0
+auc_margin=1.0
+auc_pair_subsample=256
+fine_soft_label_mode=none
+grade_soft_center=0.85
+stage_label_smoothing=0.05
+loss_w_grade_soft=0.2
+loss_w_stage_soft=0.0
+loss_w_stage_smooth=1.0
+
+[v1 Soft-Label Summary]
+v1_soft_label_mode=Full
+grade_soft_scheme=asym_v1
+stage_soft_scheme=asym_v1
+loss_w_grade_soft=0.2
+loss_w_stage_soft=0.0
+
+[v1 Joint/Incomp Summary]
+lambda_incomp=0.0
+lambda_joint=0.0
+joint_gate=htn_only
+joint_detach=both
+incomp_mode=mask_sum
+
+[Confmat_grade labels=0,1,2,3]
+[[154,   0,   0,   0],
+ [ 22,   0,   0,   2],
+ [ 16,   0,   0,   1],
+ [  2,   0,   0,   3]]
+
+[Confmat_stage labels=0,1,2]
+[[154,   0,   0],
+ [ 11,   0,   1],
+ [ 23,   0,  11]]
+
+[Confmat_grade_stage labels=00,11,12,21,22,32,INV]
+[[154,   0,   0,   0,   0,   0,   0],
+ [ 10,   0,   0,   0,   0,   0,   1],
+ [ 11,   0,   0,   0,   0,   2,   0],
+ [  1,   0,   0,   0,   0,   0,   0],
+ [ 11,   0,   0,   0,   0,   1,   4],
+ [  1,   0,   0,   0,   0,   3,   1],
+ [  0,   0,   0,   0,   0,   0,   0]]
+
+[invalid_type_count]
+{"g0_s2": 6}
+
+[generated_figures]
+roc_grade_any_htn.png
+roc_grade_comparison.png
+Confmat_grade.png
+roc_stage_any_htn.png
+roc_stage_comparison.png
+Confmat_stage.png
+calib_any_htn_grade.png
+calib_any_htn_stage.png
+Confmat_grade_stage.png
+invalid_type_hist.png
+
+[Raw vs Final Comparison]
+QWK_grade_raw=0.3646688406611941; QWK_grade_final=0.3646688406611941
+QWK_stage_raw=0.41176470588235303; QWK_stage_final=0.41176470588235303
+MAE_grade_raw=0.325; MAE_grade_final=0.325
+MAE_stage_raw=0.29; MAE_stage_final=0.29
+invalid_rate_raw=0.03; invalid_rate_final=0.03
+
+[v2 Fused Summary]
+{"fused_invalid_rate": 0.0, "mean_alpha_gate": 1.0, "mean_q1": 0.7835639715194702, "mean_q2": 0.8169721961021423, "AUC_cond_11_vs12": 0.6643356643356644, "AUC_cond_21_vs22": 0.1875, "v2_disable_legacy_joint": true, "teacher_force_grade_epochs": "0 / not_used_in_v2_patch1", "graph_edge_weights_summary": {"00_11": 1.0, "11_21": 0.6, "11_12": 1.2, "21_22": 0.8, "12_22": 0.7, "22_32": 1.5}}
+
+[v2lite fused scalar metrics]
+MAE_grade_fused=0.32
+QWK_grade_fused=0.4043428818974387
+MAE_stage_fused=0.33
+QWK_stage_fused=0.27184466019417486
+ACC_grade_fused=0.785
+ACC_stage_fused=0.805
+ACC_joint6_fused=0.785
+AUROC_grade_any_htn_fused=0.9717673630717109
+AUROC_grade_ge2_fused=0.9525025536261491
+AUROC_grade_ge3_fused=0.9548717948717949
+AUROC_stage_any_htn_fused=0.9717673630717109
+AUROC_stage_ge2_fused=0.9624379872430899
+
+[v2lite fused ovr metrics - joint6]
+{"joint6_fused_class_0": {"precision": 0.7979274611398963, "sensitivity": 1.0, "specificity": 0.15217391304347827, "accuracy": 0.805, "support": 154}, "joint6_fused_class_1": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.945, "support": 11}, "joint6_fused_class_2": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.935, "support": 13}, "joint6_fused_class_3": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.995, "support": 1}, "joint6_fused_class_4": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.92, "support": 16}, "joint6_fused_class_5": {"precision": 0.42857142857142855, "sensitivity": 0.6, "specificity": 0.9794871794871794, "accuracy": 0.97, "support": 5}, "joint6_fused_macro_avg": {"precision": 0.20441648161855416, "sensitivity": 0.26666666666666666, "specificity": 0.8552768487551097, "accuracy": 0.9283333333333333}, "joint6_fused_weighted_avg": {"precision": 0.6251184307920059, "sensitivity": 0.785, "specificity": 0.34666109253065774, "accuracy": 0.835425}}
+
+[v2lite fused ovr metrics - grade]
+{"grade_fused_class_0": {"precision": 0.7979274611398963, "sensitivity": 1.0, "specificity": 0.15217391304347827, "accuracy": 0.805, "support": 154}, "grade_fused_class_1": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.88, "support": 24}, "grade_fused_class_2": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.915, "support": 17}, "grade_fused_class_3": {"precision": 0.42857142857142855, "sensitivity": 0.6, "specificity": 0.9794871794871794, "accuracy": 0.97, "support": 5}, "grade_fused_macro_avg": {"precision": 0.30662472242783123, "sensitivity": 0.4, "specificity": 0.7829152731326645, "accuracy": 0.8925000000000001}, "grade_fused_weighted_avg": {"precision": 0.6251184307920059, "sensitivity": 0.785, "specificity": 0.34666109253065774, "accuracy": 0.8274750000000001}}
+
+[v2lite fused ovr metrics - stage]
+{"stage_fused_class_0": {"precision": 0.7979274611398963, "sensitivity": 1.0, "specificity": 0.15217391304347827, "accuracy": 0.805, "support": 154}, "stage_fused_class_1": {"precision": 0.0, "sensitivity": 0.0, "specificity": 1.0, "accuracy": 0.94, "support": 12}, "stage_fused_class_2": {"precision": 1.0, "sensitivity": 0.20588235294117646, "specificity": 1.0, "accuracy": 0.865, "support": 34}, "stage_fused_macro_avg": {"precision": 0.5993091537132987, "sensitivity": 0.40196078431372545, "specificity": 0.7173913043478262, "accuracy": 0.8700000000000001}, "stage_fused_weighted_avg": {"precision": 0.7844041450777203, "sensitivity": 0.805, "specificity": 0.3471739130434783, "accuracy": 0.8233}}
+
+[v2lite fused ROC]
+roc_grade_any_htn_fused.png
+roc_grade_comparison_fused.png
+roc_stage_any_htn_fused.png
+roc_stage_comparison_fused.png
+
+[embtab-v2lite summary]
+mean_gate_g=0.5475285649299622
+mean_gate_s=0.5852903127670288
+use_stopgrad_grade_for_cond=True
+joint_beta_stage=0.5
+joint_gamma_cond=0.6
+cond_pos_weight_g1=8.0
+cond_pos_weight_g2=12.0
+embtab_v2lite_grade_fusion=residual_gated
+embtab_v2lite_stage_fusion=residual_gated
+embtab_v2lite_conditional_stage=True
+embtab_v2lite_stage_soft_label=False
+
+[LPv3]
+lpv3_enable_neck: False
+lpv3_neck_hidden_dim: 512
+lpv3_neck_out_dim: 128
+lpv3_neck_dropout: 0.2
+lpv3_joint_aware_sampler: False
+lpv3_sampler_mode: joint_inv_freq
+lpv3_sampler_power: 0.5
+lpv3_sampler_cap: 5.0
+lpv3_sampler_floor: 1.0
+lpv3_sampler_boost_11: 2.0
+lpv3_sampler_boost_21: 4.0
+lpv3_sampler_boost_32: 1.5
+lpv3_sampler_boost_12: 1.0
+lpv3_sampler_boost_22: 1.0
+lpv3_stageA_epochs: 5
+lpv3_enable_cond_after_epoch: 3
+lpv3_enable_soft_joint_after_epoch: 10

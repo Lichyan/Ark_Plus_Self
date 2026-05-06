@@ -1,0 +1,19 @@
+{
+  "decoder_mode": "temp_ev",
+  "decoder_objective": "macro_f1",
+  "cutpoints": {
+    "grade": [
+      0.78,
+      1.68,
+      1.92
+    ],
+    "stage": [
+      0.7000000000000001,
+      0.86
+    ]
+  },
+  "used_saved_thresholds": false,
+  "has_val_search": true,
+  "temperature_grade": 0.65,
+  "temperature_stage": 1.1
+}
