@@ -1,0 +1,37 @@
+experiment_id,lambda_joint_soft_group,decoder_name,cohort,decoder_mode,decoder_objective,cutpoints,thresholds,used_saved_thresholds,has_val_search,temperature_grade,temperature_stage
+grandBatch128,joint_ce_on,decoder_non_qwk,handan,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_non_qwk,handan_have_bmi,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_non_qwk,hebei,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_non_qwk,hfirstALL,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_non_qwk,hfirstALL_have_bmi,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_non_qwk,internal,non,qwk,,,False,False,,
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,handan,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,handan_have_bmi,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,hebei,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,hfirstALL,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,hfirstALL_have_bmi,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_ev_macro_f1,internal,temp_ev,macro_f1,"{'grade': [0.78, 1.68, 1.92], 'stage': [0.7000000000000001, 0.86]}",,False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,handan,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,handan_have_bmi,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,hebei,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,hfirstALL,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,hfirstALL_have_bmi,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128,joint_ce_on,decoder_temp_threshold_composite,internal,temp_threshold,composite,,"{'grade': [0.99, 0.42, 0.07], 'stage': [0.63, 0.2]}",False,True,0.65,1.1
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,handan,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,handan_have_bmi,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,hebei,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,hfirstALL,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,hfirstALL_have_bmi,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_non_qwk,internal,non,qwk,,,False,False,,
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,handan,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,handan_have_bmi,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,hebei,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,hfirstALL,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,hfirstALL_have_bmi,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_ev_macro_f1,internal,temp_ev,macro_f1,"{'grade': [0.84, 1.71, 1.95], 'stage': [0.74, 1.04]}",,False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,handan,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,handan_have_bmi,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,hebei,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,hfirstALL,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,hfirstALL_have_bmi,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
+grandBatch128_jointsoft_00,joint_ce_off,decoder_temp_threshold_composite,internal,temp_threshold,composite,,"{'grade': [0.98, 0.44, 0.09], 'stage': [0.64, 0.17]}",False,True,0.7,1.2000000000000002
