@@ -1,0 +1,58 @@
+# parse report
+
+- 找到 result.txt: 36
+- 解析成功(parse_success=True): 36
+- 失败/异常: 0
+
+## 每个 result 解析状态
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_non_qwk/internal/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_ev_macro_f1/internal/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128/decoder_temp_threshold_composite/internal/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_non_qwk/internal/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_ev_macro_f1/internal/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/handan/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/handan_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/hebei/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/hfirstALL/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/hfirstALL_have_bmi/result.txt: success=True; missing=; json_failures=
+- Finetuning/result_tmp/swin_large_384_ark_plus_mimic_embtab_v2lite_seed42_CORN_tuneS1_grandBatch128_jointsoft_00/decoder_temp_threshold_composite/internal/result.txt: success=True; missing=; json_failures=
+
+## 输出 CSV
+- confmat_grade_long.csv
+- confmat_joint6_long.csv
+- confmat_stage_long.csv
+- decoder_config_summary.csv
+- derived_metrics.csv
+- fused_metrics.csv
+- fused_ovr_metrics.csv
+- invalid_type_counts.csv
+- model_hyperparam_summary.csv
+- parse_index.csv
+- raw_vs_final_metrics.csv
+- summary_metrics_long.csv
+- summary_metrics_wide.csv
