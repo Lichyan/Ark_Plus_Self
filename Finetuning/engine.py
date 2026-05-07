@@ -834,6 +834,15 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
                 else:
                     p_grade = torch.sigmoid(logits_grade)
                     p_stage = torch.sigmoid(logits_stage)
+            elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits"]):
+                logits_grade = out["grade_logits"]
+                logits_stage = out["stage_ind_logits"]
+                if str(ordinal_mode).lower() == "corn":
+                    p_grade = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+                    p_stage = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+                else:
+                    p_grade = torch.sigmoid(logits_grade)
+                    p_stage = torch.sigmoid(logits_stage)
             elif isinstance(out, tuple) and len(out) == 2:
                 logits_grade, logits_stage = out
                 if str(ordinal_mode).lower() == "corn":
