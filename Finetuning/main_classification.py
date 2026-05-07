@@ -30,7 +30,8 @@ def get_args_parser():
                       default=14, type="int")
     parser.add_option("--num_class_grade", dest="num_class_grade", help="number of grade ordinal logits", default=3, type="int")
     parser.add_option("--num_class_stage", dest="num_class_stage", help="number of stage ordinal logits", default=2, type="int")
-    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1|advCheX_hyp_grade_stage_v2|advCheX_hyp_grade_stage_embtab_base|advCheX_hyp_grade_stage_embtab_v2lite", default="ChestXray14", type="string")
+    parser.add_option("--data_set", dest="data_set", help="ChestXray14|CheXpert|Shenzhen|VinDrCXR|RSNAPneumonia|advCheX|advCheX_binary|advCheX_hyp|advCheX_hyp_multi_level|advCheX_hyp_multi_stage_v1|advCheX_hyp_multi_stage_v2|advCheX_hyp_multi_grade_stage_v1|advCheX_hyp_multi_grade_stage_sep_v1|advCheX_hyp_grade_stage_v2|advCheX_hyp_grade_stage_embtab_base|advCheX_hyp_grade_stage_embtab_v2lite|advCheX_hyp_grade_stage_tab_only|advCheX_hyp_grade_stage_imgemb_only|advCheX_hyp_grade_stage_simple_concat_fusion", default="ChestXray14", type="string")
+    parser.add_option("--tabular_only", dest="tabular_only", default=False, action="store_true")
     parser.add_option("--normalization", dest="normalization", help="how to normalize data (imagenet|chestx-ray)", default="imagenet",
                       type="string")
     parser.add_option("--img_size", dest="img_size", help="resize image resolution", default=256, type="int")
@@ -744,13 +745,14 @@ def main(args):
             augment=build_transform_classification(normalize=args.normalization, mode="test", crop_size=args.input_size, resize=args.img_size))
         classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test)
 
-    elif args.data_set == "advCheX_hyp_grade_stage_embtab_base":
+    elif args.data_set in {"advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_tab_only", "advCheX_hyp_grade_stage_imgemb_only", "advCheX_hyp_grade_stage_simple_concat_fusion"}:
         args.num_class_grade = 3
         args.num_class_stage = 2
         args.num_class = args.num_class_grade
         diseases = ["grade", "stage"]
         val_images_root = args.val_data_dir if getattr(args, "val_data_dir", None) else args.data_dir
         need_decoder_val = str(getattr(args, "decodermode", "non")).lower() != "non"
+        load_img_emb = args.data_set != "advCheX_hyp_grade_stage_tab_only"
         if args.mode == "train":
             dataset_train = advCheX_hyp_grade_stage_embtab_base(
                 images_path=args.data_dir,
@@ -758,12 +760,14 @@ def main(args):
                 split="train",
                 tab_norm_stats=None,
                 few_shot=args.few_shot,
+                load_img_emb=load_img_emb,
             )
             dataset_val = advCheX_hyp_grade_stage_embtab_base(
                 images_path=val_images_root,
                 file_path=args.val_list,
                 split="valid",
                 tab_norm_stats=dataset_train.tab_norm_stats,
+                load_img_emb=load_img_emb,
             )
         else:
             dataset_train = None
@@ -773,12 +777,14 @@ def main(args):
                     file_path=args.train_list,
                     split="train",
                     tab_norm_stats=None,
+                    load_img_emb=load_img_emb,
                 )
                 dataset_val = advCheX_hyp_grade_stage_embtab_base(
                     images_path=val_images_root,
                     file_path=args.val_list,
                     split="valid",
                     tab_norm_stats=dataset_val_train.tab_norm_stats,
+                    load_img_emb=load_img_emb,
                 )
             else:
                 dataset_val = None
@@ -792,6 +798,7 @@ def main(args):
                 file_path=args.train_list,
                 split="train",
                 tab_norm_stats=None,
+                load_img_emb=False,
             )
             tab_stats_for_test = dataset_train_for_stats.tab_norm_stats
         dataset_test = advCheX_hyp_grade_stage_embtab_base(
@@ -799,6 +806,7 @@ def main(args):
             file_path=args.test_list,
             split="test",
             tab_norm_stats=tab_stats_for_test,
+            load_img_emb=load_img_emb,
         )
         classification_engine(args, model_path, output_path, diseases, dataset_train, dataset_val, dataset_test)
 

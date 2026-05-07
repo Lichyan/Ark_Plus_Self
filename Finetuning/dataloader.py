@@ -1141,7 +1141,7 @@ class advCheX_hyp_grade_stage_embtab_base(Dataset):
 
     TAB_COLS = ["age_abs", "age_topcoded", "sex_bin", "bmi_stat", "bmi_missing"]
 
-    def __init__(self, images_path, file_path, split="train", tab_norm_stats=None, few_shot=-1):
+    def __init__(self, images_path, file_path, split="train", tab_norm_stats=None, few_shot=-1, load_img_emb=True):
         self.images_path = images_path
         self.file_path = file_path
         self.split = str(split).lower()
@@ -1153,6 +1153,7 @@ class advCheX_hyp_grade_stage_embtab_base(Dataset):
         self.tab_list = []
         self.joint_ids = []
         self.tab_norm_stats = dict(tab_norm_stats) if tab_norm_stats is not None else None
+        self.load_img_emb = bool(load_img_emb)
 
         with open(file_path, "r") as f:
             csv_reader = csv.DictReader(f)
@@ -1252,8 +1253,11 @@ class advCheX_hyp_grade_stage_embtab_base(Dataset):
 
     def __getitem__(self, index):
         emb_path = self.img_list[index]
-        img_emb = np.load(emb_path)
-        img_emb = np.asarray(img_emb, dtype=np.float32).reshape(-1)
+        if self.load_img_emb:
+            img_emb = np.load(emb_path)
+            img_emb = np.asarray(img_emb, dtype=np.float32).reshape(-1)
+        else:
+            img_emb = np.zeros((1376,), dtype=np.float32)
         tab = np.asarray(self.tab_list[index], dtype=np.float32)
         grade = int(self.grade_list[index])
         stage = int(self.stage_list[index])

@@ -75,6 +75,42 @@ def build_classification_model(args):
             num_class_grade=getattr(args, "num_class_grade", 3),
             num_class_stage=getattr(args, "num_class_stage", 2),
         )
+    if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_tab_only":
+        return TabularOnlyOrdinalModel(
+            tab_dim=getattr(args, "tab_dim", 5),
+            tab_hidden_dim=getattr(args, "tab_hidden_dim", 32),
+            tab_out_dim=getattr(args, "tab_out_dim", 64),
+            task_hidden_dim=getattr(args, "task_hidden_dim", 128),
+            dropout_tab=getattr(args, "dropout_tab", 0.1),
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+        )
+    if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_imgemb_only":
+        return EmbeddingOnlyOrdinalModel(
+            img_emb_dim=getattr(args, "img_emb_dim", 1376),
+            img_hidden_dim=getattr(args, "img_hidden_dim", 512),
+            img_out_dim=getattr(args, "img_out_dim", 256),
+            task_hidden_dim=getattr(args, "task_hidden_dim", 128),
+            dropout_img=getattr(args, "dropout_img", 0.2),
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+        )
+    if getattr(args, "data_set", "") == "advCheX_hyp_grade_stage_simple_concat_fusion":
+        return SimpleConcatFusionOrdinalModel(
+            img_emb_dim=getattr(args, "img_emb_dim", 1376),
+            tab_dim=getattr(args, "tab_dim", 5),
+            img_hidden_dim=getattr(args, "img_hidden_dim", 512),
+            img_out_dim=getattr(args, "img_out_dim", 256),
+            tab_hidden_dim=getattr(args, "tab_hidden_dim", 32),
+            tab_out_dim=getattr(args, "tab_out_dim", 64),
+            fusion_hidden_dim=getattr(args, "fusion_hidden_dim", 192),
+            task_hidden_dim=getattr(args, "task_hidden_dim", 128),
+            dropout_img=getattr(args, "dropout_img", 0.2),
+            dropout_tab=getattr(args, "dropout_tab", 0.1),
+            dropout_fusion=getattr(args, "dropout_fusion", 0.2),
+            num_class_grade=getattr(args, "num_class_grade", 3),
+            num_class_stage=getattr(args, "num_class_stage", 2),
+        )
     if args.pretrained_weights is None or args.pretrained_weights =='':
         print('Loading pretrained {} weights for {} from timm.'.format(args.init, args.model_name))
         if args.model_name.lower() == "vit_base":
@@ -620,6 +656,84 @@ class EmbeddingTabularV2LiteModel(nn.Module):
             "gate_s": gate_s,
             "pG_ctx": pG_ctx,
         }
+
+
+class EmbeddingOnlyOrdinalModel(nn.Module):
+    def __init__(self, img_emb_dim=1376, img_hidden_dim=512, img_out_dim=256, task_hidden_dim=128, dropout_img=0.2, num_class_grade=3, num_class_stage=2):
+        super().__init__()
+        self.img_tower = nn.Sequential(
+            nn.LayerNorm(int(img_emb_dim)),
+            nn.Linear(int(img_emb_dim), int(img_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_img)),
+            nn.Linear(int(img_hidden_dim), int(img_out_dim)),
+            nn.GELU(),
+        )
+        self.shared = nn.Sequential(nn.Linear(int(img_out_dim), int(task_hidden_dim)), nn.GELU())
+        self.head_grade = nn.Linear(int(task_hidden_dim), int(num_class_grade))
+        self.head_stage = nn.Linear(int(task_hidden_dim), int(num_class_stage))
+
+    def forward(self, x):
+        z = self.img_tower(x["img_emb"])
+        h = self.shared(z)
+        return {"grade_logits": self.head_grade(h), "stage_ind_logits": self.head_stage(h)}
+
+
+class TabularOnlyOrdinalModel(nn.Module):
+    def __init__(self, tab_dim=5, tab_hidden_dim=32, tab_out_dim=64, task_hidden_dim=128, dropout_tab=0.1, num_class_grade=3, num_class_stage=2):
+        super().__init__()
+        self.tab_tower = nn.Sequential(
+            nn.Linear(int(tab_dim), int(tab_hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(float(dropout_tab)),
+            nn.Linear(int(tab_hidden_dim), int(tab_out_dim)),
+            nn.ReLU(),
+        )
+        self.shared = nn.Sequential(nn.Linear(int(tab_out_dim), int(task_hidden_dim)), nn.GELU())
+        self.head_grade = nn.Linear(int(task_hidden_dim), int(num_class_grade))
+        self.head_stage = nn.Linear(int(task_hidden_dim), int(num_class_stage))
+
+    def forward(self, x):
+        z = self.tab_tower(x["tab"])
+        h = self.shared(z)
+        return {"grade_logits": self.head_grade(h), "stage_ind_logits": self.head_stage(h)}
+
+
+class SimpleConcatFusionOrdinalModel(nn.Module):
+    def __init__(self, img_emb_dim=1376, tab_dim=5, img_hidden_dim=512, img_out_dim=256, tab_hidden_dim=32, tab_out_dim=64,
+                 fusion_hidden_dim=192, task_hidden_dim=128, dropout_img=0.2, dropout_tab=0.1, dropout_fusion=0.2,
+                 num_class_grade=3, num_class_stage=2):
+        super().__init__()
+        self.img_tower = nn.Sequential(
+            nn.LayerNorm(int(img_emb_dim)),
+            nn.Linear(int(img_emb_dim), int(img_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_img)),
+            nn.Linear(int(img_hidden_dim), int(img_out_dim)),
+            nn.GELU(),
+        )
+        self.tab_tower = nn.Sequential(
+            nn.Linear(int(tab_dim), int(tab_hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(float(dropout_tab)),
+            nn.Linear(int(tab_hidden_dim), int(tab_out_dim)),
+            nn.ReLU(),
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(int(img_out_dim + tab_out_dim), int(fusion_hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout_fusion)),
+            nn.Linear(int(fusion_hidden_dim), int(task_hidden_dim)),
+            nn.GELU(),
+        )
+        self.head_grade = nn.Linear(int(task_hidden_dim), int(num_class_grade))
+        self.head_stage = nn.Linear(int(task_hidden_dim), int(num_class_stage))
+
+    def forward(self, x):
+        z_img = self.img_tower(x["img_emb"])
+        z_tab = self.tab_tower(x["tab"])
+        h = self.fusion(torch.cat([z_img, z_tab], dim=1))
+        return {"grade_logits": self.head_grade(h), "stage_ind_logits": self.head_stage(h)}
 
 
 
