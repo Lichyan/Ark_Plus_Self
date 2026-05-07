@@ -568,6 +568,52 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             }
             return loss
 
+        if isinstance(outputs, dict) and all(k in outputs for k in ["grade_logits", "stage_ind_logits"]):
+            logits_grade = outputs["grade_logits"]
+            logits_stage = outputs["stage_ind_logits"]
+            y_grade = targets["y_grade"]
+            y_stage = targets["y_stage"]
+            if str(self.ordinal_mode).lower() == "corn":
+                loss_grade_base = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
+                loss_stage_base = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
+                ge_g = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+                ge_s = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+            else:
+                loss_grade_base = self.loss_grade(logits_grade, y_grade)
+                loss_stage_base = self.loss_stage(logits_stage, y_stage)
+                ge_g = torch.sigmoid(logits_grade)
+                ge_s = torch.sigmoid(logits_stage)
+
+            loss_grade_soft = loss_grade_base.new_tensor(0.0)
+            loss_stage_soft = loss_stage_base.new_tensor(0.0)
+            if str(getattr(self, "v1_soft_label_mode", "none") or "none").lower() == "full":
+                raw_grade = targets.get("raw_grade")
+                raw_stage = targets.get("raw_stage")
+                if raw_grade is None:
+                    raw_grade = torch.sum(y_grade > 0.5, dim=1).long()
+                if raw_stage is None:
+                    raw_stage = torch.sum(y_stage > 0.5, dim=1).long()
+                pG_full = self._build_full_grade_probs_from_ge(ge_g)
+                pS_full = self._build_full_stage_probs_from_ge(ge_s)
+                y_grade_soft = self._build_v1_grade_soft_targets(raw_grade, getattr(self, "grade_soft_scheme", "asym_v1"))
+                y_stage_soft = self._build_v1_stage_soft_targets(raw_stage, getattr(self, "stage_soft_scheme", "asym_v1"))
+                loss_grade_soft = self._compute_soft_ce(pG_full, y_grade_soft)
+                loss_stage_soft = self._compute_soft_ce(pS_full, y_stage_soft)
+
+            loss_grade = loss_grade_base + float(getattr(self, "loss_w_grade_soft", 0.2) or 0.0) * loss_grade_soft
+            loss_stage = loss_stage_base + float(getattr(self, "loss_w_stage_soft", 0.1) or 0.0) * loss_stage_soft
+            loss = self.w_grade * loss_grade + self.w_stage * loss_stage
+            self.last_components = {
+                "loss_grade": float(loss_grade.detach().cpu().item()),
+                "loss_stage": float(loss_stage.detach().cpu().item()),
+                "loss_grade_base": float(loss_grade_base.detach().cpu().item()),
+                "loss_stage_base": float(loss_stage_base.detach().cpu().item()),
+                "loss_grade_soft": float(loss_grade_soft.detach().cpu().item()),
+                "loss_stage_soft": float(loss_stage_soft.detach().cpu().item()),
+                "loss_total": float(loss.detach().cpu().item()),
+            }
+            return loss
+
         logits_grade, logits_stage = outputs
         y_grade = targets["y_grade"]
         y_stage = targets["y_stage"]
@@ -788,6 +834,15 @@ def _collect_outputs_multi(model, data_loader, device, ordinal_mode="default"):
                 else:
                     p_grade = torch.sigmoid(logits_grade)
                     p_stage = torch.sigmoid(logits_stage)
+            elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits"]):
+                logits_grade = out["grade_logits"]
+                logits_stage = out["stage_ind_logits"]
+                if str(ordinal_mode).lower() == "corn":
+                    p_grade = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+                    p_stage = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+                else:
+                    p_grade = torch.sigmoid(logits_grade)
+                    p_stage = torch.sigmoid(logits_stage)
             elif isinstance(out, tuple) and len(out) == 2:
                 logits_grade, logits_stage = out
                 if str(ordinal_mode).lower() == "corn":
@@ -961,7 +1016,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite", "advCheX_hyp_grade_stage_tab_only", "advCheX_hyp_grade_stage_imgemb_only", "advCheX_hyp_grade_stage_simple_concat_fusion"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -1654,6 +1709,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_grade_stage_sep_v1",
         "advCheX_hyp_grade_stage_embtab_base",
         "advCheX_hyp_grade_stage_embtab_v2lite",
+        "advCheX_hyp_grade_stage_tab_only",
+        "advCheX_hyp_grade_stage_imgemb_only",
+        "advCheX_hyp_grade_stage_simple_concat_fusion",
         }
         if use_cached:
           y_test = read_from_csv(gt_csv)
@@ -1709,7 +1767,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               if "gate_s" in p_test:
                 aux_scores["gate_s"] = p_test["gate_s"].cpu().numpy()
 
-          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}:
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite", "advCheX_hyp_grade_stage_tab_only", "advCheX_hyp_grade_stage_imgemb_only", "advCheX_hyp_grade_stage_simple_concat_fusion"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1775,7 +1833,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
               loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
-              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2lite" if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set == "advCheX_hyp_grade_stage_embtab_base" else "v1")))),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2lite" if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set in {"advCheX_hyp_grade_stage_embtab_base","advCheX_hyp_grade_stage_tab_only","advCheX_hyp_grade_stage_imgemb_only","advCheX_hyp_grade_stage_simple_concat_fusion"} else "v1")))),
               v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
               grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
               stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
@@ -2069,6 +2127,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_grade_stage_v2",
         "advCheX_hyp_grade_stage_embtab_base",
         "advCheX_hyp_grade_stage_embtab_v2lite",
+        "advCheX_hyp_grade_stage_tab_only",
+        "advCheX_hyp_grade_stage_imgemb_only",
+        "advCheX_hyp_grade_stage_simple_concat_fusion",
       }:
         return
 
