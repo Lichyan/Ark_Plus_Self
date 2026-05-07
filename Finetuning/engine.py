@@ -568,6 +568,52 @@ class MultiHeadOrdinalLoss(torch.nn.Module):
             }
             return loss
 
+        if isinstance(outputs, dict) and all(k in outputs for k in ["grade_logits", "stage_ind_logits"]):
+            logits_grade = outputs["grade_logits"]
+            logits_stage = outputs["stage_ind_logits"]
+            y_grade = targets["y_grade"]
+            y_stage = targets["y_stage"]
+            if str(self.ordinal_mode).lower() == "corn":
+                loss_grade_base = self._corn_task_loss(logits_grade, y_grade, pos_weight=self.loss_grade.pos_weight)
+                loss_stage_base = self._corn_task_loss(logits_stage, y_stage, pos_weight=self.loss_stage.pos_weight)
+                ge_g = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+                ge_s = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+            else:
+                loss_grade_base = self.loss_grade(logits_grade, y_grade)
+                loss_stage_base = self.loss_stage(logits_stage, y_stage)
+                ge_g = torch.sigmoid(logits_grade)
+                ge_s = torch.sigmoid(logits_stage)
+
+            loss_grade_soft = loss_grade_base.new_tensor(0.0)
+            loss_stage_soft = loss_stage_base.new_tensor(0.0)
+            if str(getattr(self, "v1_soft_label_mode", "none") or "none").lower() == "full":
+                raw_grade = targets.get("raw_grade")
+                raw_stage = targets.get("raw_stage")
+                if raw_grade is None:
+                    raw_grade = torch.sum(y_grade > 0.5, dim=1).long()
+                if raw_stage is None:
+                    raw_stage = torch.sum(y_stage > 0.5, dim=1).long()
+                pG_full = self._build_full_grade_probs_from_ge(ge_g)
+                pS_full = self._build_full_stage_probs_from_ge(ge_s)
+                y_grade_soft = self._build_v1_grade_soft_targets(raw_grade, getattr(self, "grade_soft_scheme", "asym_v1"))
+                y_stage_soft = self._build_v1_stage_soft_targets(raw_stage, getattr(self, "stage_soft_scheme", "asym_v1"))
+                loss_grade_soft = self._compute_soft_ce(pG_full, y_grade_soft)
+                loss_stage_soft = self._compute_soft_ce(pS_full, y_stage_soft)
+
+            loss_grade = loss_grade_base + float(getattr(self, "loss_w_grade_soft", 0.2) or 0.0) * loss_grade_soft
+            loss_stage = loss_stage_base + float(getattr(self, "loss_w_stage_soft", 0.1) or 0.0) * loss_stage_soft
+            loss = self.w_grade * loss_grade + self.w_stage * loss_stage
+            self.last_components = {
+                "loss_grade": float(loss_grade.detach().cpu().item()),
+                "loss_stage": float(loss_stage.detach().cpu().item()),
+                "loss_grade_base": float(loss_grade_base.detach().cpu().item()),
+                "loss_stage_base": float(loss_stage_base.detach().cpu().item()),
+                "loss_grade_soft": float(loss_grade_soft.detach().cpu().item()),
+                "loss_stage_soft": float(loss_stage_soft.detach().cpu().item()),
+                "loss_total": float(loss.detach().cpu().item()),
+            }
+            return loss
+
         logits_grade, logits_stage = outputs
         y_grade = targets["y_grade"]
         y_stage = targets["y_stage"]
