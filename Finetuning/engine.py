@@ -961,7 +961,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
   output_file = os.path.join(output_path, args.exp_name + "_results.txt")
 
   ordinal_datasets = {"advCheX_hyp_multi_level", "advCheX_hyp_multi_stage_v1", "advCheX_hyp_multi_stage_v2"}
-  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}
+  multihead_datasets = {"advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite", "advCheX_hyp_grade_stage_tab_only", "advCheX_hyp_grade_stage_imgemb_only", "advCheX_hyp_grade_stage_simple_concat_fusion"}
   if args.data_set in ordinal_datasets and (getattr(args, "test_time_adjust", False) or getattr(args, "output_special", False)):
     if hasattr(dataset_test, "return_path"):
       dataset_test.return_path = True
@@ -1654,6 +1654,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_multi_grade_stage_sep_v1",
         "advCheX_hyp_grade_stage_embtab_base",
         "advCheX_hyp_grade_stage_embtab_v2lite",
+        "advCheX_hyp_grade_stage_tab_only",
+        "advCheX_hyp_grade_stage_imgemb_only",
+        "advCheX_hyp_grade_stage_simple_concat_fusion",
         }
         if use_cached:
           y_test = read_from_csv(gt_csv)
@@ -1709,7 +1712,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               if "gate_s" in p_test:
                 aux_scores["gate_s"] = p_test["gate_s"].cpu().numpy()
 
-          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite"}:
+          if args.data_set in {"advCheX_hyp_multi_grade_stage_sep_v1", "advCheX_hyp_multi_grade_stage_v1", "advCheX_hyp_grade_stage_v2", "advCheX_hyp_grade_stage_embtab_base", "advCheX_hyp_grade_stage_embtab_v2lite", "advCheX_hyp_grade_stage_tab_only", "advCheX_hyp_grade_stage_imgemb_only", "advCheX_hyp_grade_stage_simple_concat_fusion"}:
             output_dir = os.path.dirname(output_file)
             val_y_grade = val_y_stage = val_p_grade = val_p_stage = None
             decoder_mode = str(getattr(args, "decodermode", "non")).lower()
@@ -1775,7 +1778,7 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
               loss_w_grade_soft=getattr(args, "loss_w_grade_soft", 0.2),
               loss_w_stage_soft=getattr(args, "loss_w_stage_soft", 0.1),
               loss_w_stage_smooth=getattr(args, "loss_w_stage_smooth", 1.0),
-              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2lite" if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set == "advCheX_hyp_grade_stage_embtab_base" else "v1")))),
+              dataset_tag=("sep_v1" if args.data_set == "advCheX_hyp_multi_grade_stage_sep_v1" else ("v2lite" if args.data_set == "advCheX_hyp_grade_stage_embtab_v2lite" else ("v2" if args.data_set == "advCheX_hyp_grade_stage_v2" else ("embtab_base" if args.data_set in {"advCheX_hyp_grade_stage_embtab_base","advCheX_hyp_grade_stage_tab_only","advCheX_hyp_grade_stage_imgemb_only","advCheX_hyp_grade_stage_simple_concat_fusion"} else "v1")))),
               v1_soft_label_mode=getattr(args, "v1_soft_label_mode", "none"),
               grade_soft_scheme=getattr(args, "grade_soft_scheme", "asym_v1"),
               stage_soft_scheme=getattr(args, "stage_soft_scheme", "asym_v1"),
@@ -2069,6 +2072,9 @@ def classification_engine(args, model_path, output_path, diseases, dataset_train
         "advCheX_hyp_grade_stage_v2",
         "advCheX_hyp_grade_stage_embtab_base",
         "advCheX_hyp_grade_stage_embtab_v2lite",
+        "advCheX_hyp_grade_stage_tab_only",
+        "advCheX_hyp_grade_stage_imgemb_only",
+        "advCheX_hyp_grade_stage_simple_concat_fusion",
       }:
         return
 
