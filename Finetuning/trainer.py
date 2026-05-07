@@ -52,6 +52,16 @@ def _batch_size(samples):
   return int(samples.size(0))
 
 
+def _ensure_2d_batch_tensor(x, name="tensor"):
+  if not torch.is_tensor(x):
+    raise TypeError(f"{name} must be a torch.Tensor, got {type(x)}")
+  if x.dim() == 1:
+    return x.unsqueeze(1)
+  if x.dim() == 2:
+    return x
+  raise ValueError(f"{name} must be 1D or 2D before aggregation, got shape={tuple(x.shape)}")
+
+
 def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch):
   batch_time = MetricLogger('Time', ':6.3f')
   losses = MetricLogger('Loss', ':.4e')
@@ -279,6 +289,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
         out_stage = torch.cat([pH, pH * b], dim=1)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(anyhtn)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(anyhtn)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         p_anyhtn_test = torch.cat((p_anyhtn_test, pH.view(bs, n_crops, -1).mean(1).data), 0)
@@ -299,6 +311,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
         )
         out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
         out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(v2)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(v2)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         q1_test = torch.cat((q1_test, joint["q1"].view(bs, n_crops, -1).mean(1).data), 0)
@@ -311,6 +325,21 @@ def test_classification(checkpoint, data_loader_test, device, args):
           gate_g_test = torch.cat((gate_g_test, out["gate_g"].view(bs, n_crops, -1).mean(1).data), 0)
         if "gate_s" in out:
           gate_s_test = torch.cat((gate_s_test, out["gate_s"].view(bs, n_crops, -1).mean(1).data), 0)
+      elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits"]):
+        logits_grade = out["grade_logits"]
+        logits_stage = out["stage_ind_logits"]
+        if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
+          out_grade = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+          out_stage = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+        else:
+          out_grade = torch.sigmoid(logits_grade)
+          out_stage = torch.sigmoid(logits_stage)
+        out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
+        out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(dict_plain)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(dict_plain)")
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
       elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
@@ -321,6 +350,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
           out_stage = torch.sigmoid(out_stage)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(tuple)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(tuple)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
       else:
@@ -336,6 +367,11 @@ def test_classification(checkpoint, data_loader_test, device, args):
         path_list.extend(list(paths))
 
   if y_grade_test.numel() > 0:
+    if p_grade_test.numel() == 0 or p_stage_test.numel() == 0:
+      raise RuntimeError(
+        "Multi-head targets were detected, but no multi-head probabilities were collected. "
+        "Please check output routing in test_classification."
+      )
     y_dict = {"grade": y_grade_test, "stage": y_stage_test}
     p_dict = {"grade": p_grade_test, "stage": p_stage_test}
     if p_anyhtn_test.numel() > 0:
@@ -443,6 +479,20 @@ def test_model(model, data_loader_test, args):
         raw_stage_ge = corn_marginal_ge_probs(torch.sigmoid(out["stage_ind_logits"]))
         out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
         out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+        outMean = out_grade_mean
+      elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits"]):
+        logits_grade = out["grade_logits"]
+        logits_stage = out["stage_ind_logits"]
+        if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
+          out_grade = corn_marginal_ge_probs(torch.sigmoid(logits_grade))
+          out_stage = corn_marginal_ge_probs(torch.sigmoid(logits_stage))
+        else:
+          out_grade = torch.sigmoid(logits_grade)
+          out_stage = torch.sigmoid(logits_stage)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade.view(bs, n_crops, -1).mean(1), "out_grade_mean(dict_plain)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage.view(bs, n_crops, -1).mean(1), "out_stage_mean(dict_plain)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         outMean = out_grade_mean
