@@ -150,6 +150,23 @@ def evaluate(data_loader_val, device, model, criterion):
   return losses.avg
 
 
+
+
+def _resolve_tensor_from_dict_output(out):
+  """Resolve a representative tensor from dict outputs for single-task testing."""
+  preferred_keys = [
+    "logits", "pred", "prediction", "anyhtn", "grade_logits", "stage_logits",
+    "stage_ind_logits", "output", "out"
+  ]
+  for key in preferred_keys:
+    if key in out and torch.is_tensor(out[key]):
+      return out[key]
+  for value in out.values():
+    if torch.is_tensor(value):
+      return value
+  raise TypeError("No tensor value found in model dict output")
+
+
 def test_classification(checkpoint, data_loader_test, device, args):
   print('[DEBUG] ...heyheyhey:test_clasification', flush=True)
   model = build_classification_model(args)
@@ -307,6 +324,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
       else:
+        if isinstance(out, dict):
+          out = _resolve_tensor_from_dict_output(out)
         if args.data_set in ["RSNAPneumonia", "COVIDx"]:
           out = torch.softmax(out,dim = 1)
         else:
@@ -392,9 +411,16 @@ def test_model(model, data_loader_test, args):
                 torch.sigmoid(head.bias.detach()).cpu().numpy().round(4).tolist(), flush=True)
         sm, ss = _sample_stats(samples)
         print('[DEBUG] first batch input  mean/std:', sm, ss, flush=True)
-        if isinstance(out, dict):
+        if isinstance(out, dict) and "anyhtn" in out:
           print('[DEBUG] first batch output mean/std:',
                 out["anyhtn"].mean().item(), out["anyhtn"].std().item(), flush=True)
+        elif isinstance(out, dict) and "grade_logits" in out:
+          print('[DEBUG] first batch output mean/std:',
+                out["grade_logits"].mean().item(), out["grade_logits"].std().item(), flush=True)
+        elif isinstance(out, dict):
+          resolved = _resolve_tensor_from_dict_output(out)
+          print('[DEBUG] first batch output mean/std:',
+                resolved.mean().item(), resolved.std().item(), flush=True)
         elif isinstance(out, tuple):
           print('[DEBUG] first batch output mean/std:',
                 out[0].mean().item(), out[0].std().item(), flush=True)
@@ -412,6 +438,14 @@ def test_model(model, data_loader_test, args):
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+      elif isinstance(out, dict) and all(k in out for k in ["grade_logits", "stage_ind_logits", "q1_logit", "q2_logit"]):
+        raw_grade_ge = corn_marginal_ge_probs(torch.sigmoid(out["grade_logits"]))
+        raw_stage_ge = corn_marginal_ge_probs(torch.sigmoid(out["stage_ind_logits"]))
+        out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
+        out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
+        p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
+        p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
+        outMean = out_grade_mean
       elif isinstance(out, tuple):
         out_grade, out_stage = out
         if str(getattr(args, "ordinal_mode", "coral")).lower() == "corn":
@@ -426,6 +460,8 @@ def test_model(model, data_loader_test, args):
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         outMean = out_grade_mean
       else:
+        if isinstance(out, dict):
+          out = _resolve_tensor_from_dict_output(out)
         if args.data_set in ["RSNAPneumonia", "COVIDx"]:
           out = torch.softmax(out,dim = 1)
         else:
