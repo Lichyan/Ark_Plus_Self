@@ -52,6 +52,16 @@ def _batch_size(samples):
   return int(samples.size(0))
 
 
+def _ensure_2d_batch_tensor(x, name="tensor"):
+  if not torch.is_tensor(x):
+    raise TypeError(f"{name} must be a torch.Tensor, got {type(x)}")
+  if x.dim() == 1:
+    return x.unsqueeze(1)
+  if x.dim() == 2:
+    return x
+  raise ValueError(f"{name} must be 1D or 2D before aggregation, got shape={tuple(x.shape)}")
+
+
 def train_one_epoch(data_loader_train, device,model, criterion, optimizer, epoch):
   batch_time = MetricLogger('Time', ':6.3f')
   losses = MetricLogger('Loss', ':.4e')
@@ -279,6 +289,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
         out_stage = torch.cat([pH, pH * b], dim=1)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(anyhtn)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(anyhtn)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         p_anyhtn_test = torch.cat((p_anyhtn_test, pH.view(bs, n_crops, -1).mean(1).data), 0)
@@ -299,6 +311,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
         )
         out_grade_mean = raw_grade_ge.view(bs, n_crops, -1).mean(1)
         out_stage_mean = raw_stage_ge.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(v2)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(v2)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
         q1_test = torch.cat((q1_test, joint["q1"].view(bs, n_crops, -1).mean(1).data), 0)
@@ -321,6 +335,8 @@ def test_classification(checkpoint, data_loader_test, device, args):
           out_stage = torch.sigmoid(out_stage)
         out_grade_mean = out_grade.view(bs, n_crops, -1).mean(1)
         out_stage_mean = out_stage.view(bs, n_crops, -1).mean(1)
+        out_grade_mean = _ensure_2d_batch_tensor(out_grade_mean, "out_grade_mean(tuple)")
+        out_stage_mean = _ensure_2d_batch_tensor(out_stage_mean, "out_stage_mean(tuple)")
         p_grade_test = torch.cat((p_grade_test, out_grade_mean.data), 0)
         p_stage_test = torch.cat((p_stage_test, out_stage_mean.data), 0)
       else:
