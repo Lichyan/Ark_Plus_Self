@@ -1,4 +1,8 @@
 [2026-05-07] -codex
+Reason: 修复 tab/image/simple-concat 在测试阶段 dict plain 多头输出未进入 grade/stage 聚合分支，导致评估输入为空的问题。
+Changes: `Finetuning/trainer.py` 为 `{"grade_logits","stage_ind_logits"}` 增加独立测试聚合分支（test_classification/test_model），并在多头标签存在但未收集到 multi-head 概率时 fail-fast 报错；保持 embtab-v2lite/embtab-base/v1/sep/v2 既有路由不变。
+
+[2026-05-07] -codex
 Reason: 修复“序数评估输入被挤压后维度语义漂移”导致的评估不稳定问题，保证 tab-only/image-only/simple-concat 与 embtab 系列在同一严格评估口径下运行。
 Changes: 在 `Finetuning/utils.py` 新增 `_validate_ordinal_k`，并在 `evaluate_grade_stage_sep` 入口强制校验 `y_grade[N,3]/y_stage[N,2]/p_ge_grade[N,3]/p_ge_stage[N,2]`；`ordinal_probs_to_class_probs` 仅允许 `K in {2,3}`，遇到非法通道数直接报错而不是隐式落入错误分支；在 `Finetuning/trainer.py::test_classification` 新增 `_ensure_2d_batch_tensor` 并应用到多头测试聚合分支（coarse-fine dict、v2 dict、tuple），防止推理后拼接阶段出现 1D squeeze 引发的后续评估崩溃；不改变 embtab-v2lite/embtab-base/v1/sep/v2 的数据集路由与训练/测试命令接口。
 

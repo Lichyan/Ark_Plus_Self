@@ -1,5 +1,11 @@
 # Change Log
 
+## 2026-05-07 quick bugfix (multi-head dict plain branch)
+
+- Fixed `test_classification`/`test_model` missing plain dict multi-head route for outputs with only `grade_logits` + `stage_ind_logits`.
+- Added fail-fast guard when multi-head targets exist but `p_grade/p_stage` were not collected.
+- This resolves tab-only test-time evaluation input assembly failures and keeps existing embtab/v1/sep/v2 routes unchanged.
+
 ## 2026-05-07 ordinal evaluation stability + fairness hardening (ABCD)
 
 - Reworked ordinal shape handling to avoid silent semantic drift:
