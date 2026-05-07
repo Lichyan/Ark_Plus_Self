@@ -1,3 +1,7 @@
+[2026-05-07] -codex
+Reason: 修复“序数评估输入被挤压后维度语义漂移”导致的评估不稳定问题，保证 tab-only/image-only/simple-concat 与 embtab 系列在同一严格评估口径下运行。
+Changes: 在 `Finetuning/utils.py` 新增 `_validate_ordinal_k`，并在 `evaluate_grade_stage_sep` 入口强制校验 `y_grade[N,3]/y_stage[N,2]/p_ge_grade[N,3]/p_ge_stage[N,2]`；`ordinal_probs_to_class_probs` 仅允许 `K in {2,3}`，遇到非法通道数直接报错而不是隐式落入错误分支；在 `Finetuning/trainer.py::test_classification` 新增 `_ensure_2d_batch_tensor` 并应用到多头测试聚合分支（coarse-fine dict、v2 dict、tuple），防止推理后拼接阶段出现 1D squeeze 引发的后续评估崩溃；不改变 embtab-v2lite/embtab-base/v1/sep/v2 的数据集路由与训练/测试命令接口。
+
 [2026-03-13] -codex
 Reason: 在 sep_v1 + coarse_fine 验证版增加第一轮最小可行的 fine-head soft label/LDL 辅助损失正则，只影响训练端并保持测试/decoder主逻辑稳定。
 Changes: 新增 --fine_soft_label_mode(none|grade_only|grade_and_stage)、--grade_soft_center、--stage_label_smoothing、--loss_w_grade_soft、--loss_w_stage_smooth；仅在 advCheX_hyp_multi_grade_stage_sep_v1 + sep_head_mode=coarse_fine 下生效：grade 分支保持 CORN 主损失并附加 soft CE(LDL)辅助项，stage 分支在 grade_and_stage 模式使用 smoothed BCE target；coarse head结构与loss主逻辑不改；训练日志补充 L_G_CORN/L_G_soft/L_G_total 与 stage smoothing 状态；metrics.json/result.txt 追加 soft-label 配置字段。

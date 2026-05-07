@@ -490,19 +490,48 @@ def ordinal_logits_to_probs(logits):
     return 1.0 / (1.0 + np.exp(-logits))
 
 
+def _ensure_ordinal_2d(p_ge, name="p_ge"):
+    """
+    Ensure ordinal probability tensor has shape [N, K].
+    Accepts:
+      - [N, K] (as-is)
+      - [N] -> [N, 1] (defensive fallback)
+    """
+    arr = np.asarray(p_ge)
+    if arr.ndim == 2:
+        return arr
+    if arr.ndim == 1:
+        return arr.reshape(-1, 1)
+    raise ValueError(f"{name} must be 1D or 2D array-like, got shape={arr.shape}")
+
+
+def _validate_ordinal_k(p_ge, expected_k, name="p_ge"):
+    arr = _ensure_ordinal_2d(p_ge, name=name)
+    if arr.shape[1] != int(expected_k):
+        raise ValueError(
+            f"{name} expected shape [N, {int(expected_k)}], got {arr.shape}. "
+            f"This usually indicates upstream output squeeze or wrong head dimension."
+        )
+    return arr
+
+
 def ordinal_probs_to_class_probs(p_ge):
-    p_ge = np.asarray(p_ge)
+    p_ge = _ensure_ordinal_2d(p_ge, name="p_ge")
     k = p_ge.shape[1]
     if k == 2:
         p0 = 1 - p_ge[:, 0]
         p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
         p2 = np.clip(p_ge[:, 1], 0, 1)
         return np.stack([p0, p1, p2], axis=1)
-    p0 = 1 - p_ge[:, 0]
-    p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
-    p2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
-    p3 = np.clip(p_ge[:, 2], 0, 1)
-    return np.stack([p0, p1, p2, p3], axis=1)
+    if k == 3:
+        p0 = 1 - p_ge[:, 0]
+        p1 = np.clip(p_ge[:, 0] - p_ge[:, 1], 0, 1)
+        p2 = np.clip(p_ge[:, 1] - p_ge[:, 2], 0, 1)
+        p3 = np.clip(p_ge[:, 2], 0, 1)
+        return np.stack([p0, p1, p2, p3], axis=1)
+    raise ValueError(
+        f"ordinal_probs_to_class_probs only supports K in {{2, 3}}, got K={k} with shape={p_ge.shape}"
+    )
 
 
 def corn_marginal_ge_probs(q):
@@ -1195,8 +1224,10 @@ def evaluate_grade_stage_sep(y_grade, y_stage, p_ge_grade, p_ge_stage, output_di
                              lambda_incomp=0.0, lambda_joint=0.0, joint_gate="htn_only", joint_detach="both", incomp_mode="mask_sum"):
     y_grade = np.asarray(y_grade)
     y_stage = np.asarray(y_stage)
-    p_ge_grade = np.asarray(p_ge_grade)
-    p_ge_stage = np.asarray(p_ge_stage)
+    y_grade = _validate_ordinal_k(y_grade, 3, name="y_grade")
+    y_stage = _validate_ordinal_k(y_stage, 2, name="y_stage")
+    p_ge_grade = _validate_ordinal_k(p_ge_grade, 3, name="p_ge_grade")
+    p_ge_stage = _validate_ordinal_k(p_ge_stage, 2, name="p_ge_stage")
     grades_true = np.array([ordinal_targets_to_grade(row) for row in y_grade])
     stages_true = np.array([ordinal_targets_to_grade(row) for row in y_stage])
     pG = ordinal_probs_to_class_probs(p_ge_grade)
